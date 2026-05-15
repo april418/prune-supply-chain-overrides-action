@@ -1,0 +1,79 @@
+name: 'Prune supply-chain overrides'
+description: >-
+  Remove stale supply-chain mitigation entries (minimumReleaseAgeExclude,
+  overrides, trustPolicyExclude, onlyBuiltDependencies) from pnpm / npm
+  projects once they are no longer needed, and open a pull request with the
+  cleanup.
+author: 'april418'
+branding:
+  icon: 'scissors'
+  color: 'green'
+
+inputs:
+  working-directory:
+    description: 'Path to the project root that contains pnpm-workspace.yaml / package.json.'
+    required: false
+    default: '.'
+  targets:
+    description: >-
+      Comma-separated list of pruners to run. Supported values:
+      minimumReleaseAgeExclude, overrides, trustPolicyExclude,
+      onlyBuiltDependencies. Defaults to all.
+    required: false
+    default: 'minimumReleaseAgeExclude,overrides,trustPolicyExclude,onlyBuiltDependencies'
+  package-manager:
+    description: >-
+      Force a specific package manager (pnpm or npm). When omitted, it is
+      auto-detected from the project files.
+    required: false
+    default: ''
+  registry:
+    description: 'npm registry base URL used to look up publish timestamps.'
+    required: false
+    default: 'https://registry.npmjs.org'
+  dry-run:
+    description: 'When true, compute prune candidates but do not write files or open a PR.'
+    required: false
+    default: 'false'
+  create-pr:
+    description: 'When true, open a pull request with the changes. When false, leave the working tree modified.'
+    required: false
+    default: 'true'
+  pr-branch:
+    description: 'Branch name for the pull request. A timestamp suffix is appended.'
+    required: false
+    default: 'chore/prune-supply-chain-overrides'
+  pr-title:
+    description: 'Title for the pull request.'
+    required: false
+    default: 'chore: prune stale supply-chain overrides'
+  pr-base:
+    description: 'Base branch for the pull request. Defaults to the repository default branch.'
+    required: false
+    default: ''
+  pr-labels:
+    description: 'Comma-separated list of labels to attach to the PR.'
+    required: false
+    default: ''
+  commit-message:
+    description: 'Commit message body.'
+    required: false
+    default: 'chore: prune stale supply-chain overrides'
+  github-token:
+    description: 'Token used to create the pull request. Defaults to the workflow token.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  changed:
+    description: 'true when at least one entry was pruned.'
+  pruned:
+    description: 'JSON report of pruned entries grouped by pruner.'
+  pr-number:
+    description: 'Number of the opened pull request, when create-pr is true.'
+  pr-url:
+    description: 'URL of the opened pull request, when create-pr is true.'
+
+runs:
+  using: 'node24'
+  main: 'dist/index.js'

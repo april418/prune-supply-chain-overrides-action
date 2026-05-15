@@ -1,0 +1,39 @@
+{
+  "name": "prune-supply-chain-overrides-action",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GitHub Action that prunes stale supply-chain mitigation entries (minimumReleaseAgeExclude, overrides, trustPolicyExclude, onlyBuiltDependencies) from pnpm/npm projects.",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
+    "postbuild": "node scripts/postbuild.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src tests",
+    "format": "prettier --write src tests"
+  },
+  "dependencies": {
+    "@actions/core": "1.11.1",
+    "@actions/exec": "1.1.1",
+    "@actions/github": "6.0.0",
+    "ini": "5.0.0",
+    "semver": "7.6.3",
+    "yaml": "2.8.4"
+  },
+  "devDependencies": {
+    "@types/ini": "4.1.1",
+    "@types/node": "24.9.2",
+    "@types/semver": "7.5.8",
+    "@vercel/ncc": "0.38.3",
+    "eslint": "9.16.0",
+    "typescript-eslint": "8.59.2",
+    "prettier": "3.4.1",
+    "typescript": "5.7.2",
+    "vitest": "2.1.9"
+  }
+}

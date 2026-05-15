@@ -1,0 +1,45 @@
+# サプライチェーン攻撃対策
+#
+# 各項目は https://pnpm.io/settings を参照。
+# 緩和が必要な特定パッケージは *Exclude / onlyBuiltDependencies で
+# 明示的に opt-in する形にして、デフォルトは常に安全側に倒す。
+
+# 依存パッケージの lifecycle script (preinstall / install / postinstall)
+# は明示的に許可したものだけ実行する。空配列 = 全ブロック。
+onlyBuiltDependencies: []
+
+# 新規公開パッケージは 7 日 (10080 分) 経過するまでインストールしない。
+# 直近に公開された悪意あるバージョンの取り込みを防ぐ。
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude: []
+
+# packageManager フィールドで指定したパッケージマネージャーと一致する
+# もののみ許容。packageManagerStrict は名前 (pnpm / yarn / npm) を、
+# packageManagerStrictVersion はバージョン (pnpm@10.33.0 等) を厳密一致
+# でチェックする。両方有効化して名前とバージョンの両方を固定する。
+packageManagerStrict: true
+packageManagerStrictVersion: true
+
+# 推移依存の脆弱性を直接バージョン指定で打ち消す上書き。
+# 解消後は本アクション自身が PR で剥がしてくれる予定 (dogfood)。
+overrides:
+  # undici < 6.24.0 に GHSA-v9p9-hfj2-hcw8 (high) と複数 moderate の脆弱性。
+  # @actions/core>@actions/http-client>undici 経由で取り込まれる。
+  undici: '>=6.24.0'
+
+# peer dependency のミスマッチを警告ではなくエラーにする。
+strictPeerDependencies: true
+
+# 中間依存で git / file / http URL 等の exotic ソースを使わせない。
+blockExoticSubdeps: true
+
+# pnpm run の前に node_modules と lockfile の整合性を検証する。
+# 不整合があれば実行をエラーで止める。
+verifyDepsBeforeRun: error
+
+# パッケージの trust level が過去リリースより下がった場合にエラーにする。
+# ただし公開から 7 日以上経過した古いパッケージは trust 低下を無視する
+# (modern signing / provenance 以前のレガシーを救済する目的)。
+trustPolicy: no-downgrade
+trustPolicyExclude: []
+trustPolicyIgnoreAfter: 10080
