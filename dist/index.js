@@ -56794,6 +56794,40 @@ function stripVersionSuffix(version) {
     return version.trim();
 }
 
+;// CONCATENATED MODULE: ./src/lockfile/regenerate.ts
+
+
+
+/**
+ * Re-run `pnpm install --lockfile-only` so that `pnpm-lock.yaml` reflects the
+ * post-prune state of `pnpm-workspace.yaml`. Without this, consumers of the
+ * resulting PR hit `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` on
+ * `pnpm install --frozen-lockfile` because the `overrides` block recorded in
+ * the lockfile no longer matches what the workspace file declares.
+ *
+ * Returns the absolute path of the (now-updated) lockfile, or null when there
+ * is no lockfile to regenerate.
+ */
+async function regeneratePnpmLockfile(cwd, logger) {
+    const lockfilePath = external_node_path_default().join(cwd, 'pnpm-lock.yaml');
+    try {
+        await (0,promises_.access)(lockfilePath);
+    }
+    catch {
+        logger.info('No pnpm-lock.yaml found — skipping lockfile regeneration.');
+        return null;
+    }
+    const exitCode = await (0,exec.exec)('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'], {
+        cwd,
+        ignoreReturnCode: true,
+    });
+    if (exitCode !== 0) {
+        throw new Error(`pnpm install --lockfile-only failed with exit code ${exitCode}. ` +
+            'The pnpm-workspace.yaml prune was rolled back to avoid committing a broken state.');
+    }
+    return lockfilePath;
+}
+
 ;// CONCATENATED MODULE: ./src/util/format.ts
 /**
  * Format a duration in minutes as a short human-readable string.
@@ -57279,6 +57313,7 @@ function summarizeRemovals(reports) {
 
 
 
+
 const REGISTRY = {
     minimumReleaseAgeExclude: minimumReleaseAgeExcludePruner,
     trustPolicyExclude: trustPolicyExcludePruner,
@@ -57334,6 +57369,14 @@ async function run() {
     if (!changed) {
         logger.info('No stale entries found. Nothing to commit.');
         return;
+    }
+    if (!inputs.dryRun && packageManager === 'pnpm' && ctx.lockfile) {
+        const regenerated = await logger.group('Regenerate pnpm-lock.yaml', async () => {
+            return regeneratePnpmLockfile(cwd, logger);
+        });
+        if (regenerated && !changedFiles.includes(regenerated)) {
+            changedFiles.push(regenerated);
+        }
     }
     await writeSummary(reports);
     if (inputs.dryRun) {

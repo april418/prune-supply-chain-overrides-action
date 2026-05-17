@@ -8,6 +8,7 @@ import { loadPnpmWorkspace, savePnpmWorkspace } from './files/pnpm-workspace.js'
 import { loadPackageJson, savePackageJson } from './files/package-json.js';
 import { loadNpmrc, saveNpmrc } from './files/npmrc.js';
 import { loadPnpmLockfile } from './lockfile/pnpm-lockfile.js';
+import { regeneratePnpmLockfile } from './lockfile/regenerate.js';
 import { minimumReleaseAgeExcludePruner, trustPolicyExcludePruner } from './pruners/age-based.js';
 import { overridesPruner } from './pruners/overrides.js';
 import { onlyBuiltDependenciesPruner } from './pruners/only-built-dependencies.js';
@@ -80,6 +81,15 @@ export async function run(): Promise<void> {
   if (!changed) {
     logger.info('No stale entries found. Nothing to commit.');
     return;
+  }
+
+  if (!inputs.dryRun && packageManager === 'pnpm' && ctx.lockfile) {
+    const regenerated = await logger.group('Regenerate pnpm-lock.yaml', async () => {
+      return regeneratePnpmLockfile(cwd, logger);
+    });
+    if (regenerated && !changedFiles.includes(regenerated)) {
+      changedFiles.push(regenerated);
+    }
   }
 
   await writeSummary(reports);
