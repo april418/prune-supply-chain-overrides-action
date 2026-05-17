@@ -53,7 +53,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: package.json
 
       - uses: april418/prune-supply-chain-overrides-action@v1
         with:
