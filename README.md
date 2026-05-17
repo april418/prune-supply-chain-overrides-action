@@ -60,9 +60,13 @@ jobs:
           working-directory: .
 ```
 
-`pnpm` must be on `PATH` for the `overrides` pruner (it runs
-`pnpm install --lockfile-only` to simulate removal). The other pruners only need
-`node` and the npm registry.
+`pnpm` must be on `PATH` for any pnpm project. The `overrides` pruner runs
+`pnpm install --lockfile-only` to simulate removal, and after **any** prune
+the action re-runs `pnpm install --lockfile-only` once more so that
+`pnpm-lock.yaml` reflects the post-prune state of `pnpm-workspace.yaml`
+(otherwise downstream `pnpm install --frozen-lockfile` fails with
+`ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`). The setup shown above
+(`pnpm/action-setup` + `actions/setup-node`) covers this.
 
 ### Required repository settings
 
