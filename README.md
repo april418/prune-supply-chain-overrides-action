@@ -53,7 +53,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: package.json
 
       - uses: april418/prune-supply-chain-overrides-action@v1
         with:
@@ -63,6 +63,48 @@ jobs:
 `pnpm` must be on `PATH` for the `overrides` pruner (it runs
 `pnpm install --lockfile-only` to simulate removal). The other pruners only need
 `node` and the npm registry.
+
+### Required repository settings
+
+This action opens a pull request with `GITHUB_TOKEN`, so the consumer
+repository must allow GitHub Actions to do so. This is a **repository-level
+gate** that is independent of the workflow-level `permissions:` block — even
+with `pull-requests: write` declared, PR creation fails with
+`GitHub Actions is not permitted to create or approve pull requests` until the
+setting is flipped.
+
+To enable it:
+
+1. Open **Settings → Actions → General** in your repository
+   (`https://github.com/<owner>/<repo>/settings/actions`).
+2. Scroll to **Workflow permissions**.
+3. Tick **Allow GitHub Actions to create and approve pull requests**.
+4. **Save**.
+
+`default_workflow_permissions` can stay on _Read repository contents and
+packages permissions_ — the workflow snippet above already declares
+`contents: write` and `pull-requests: write` explicitly.
+
+You can verify the result with `gh`:
+
+```sh
+gh api repos/<owner>/<repo>/actions/permissions/workflow
+# => { "default_workflow_permissions": "read", "can_approve_pull_request_reviews": true }
+```
+
+#### Alternatives without flipping the repository setting
+
+If the gate is enforced at the organization or enterprise level and you cannot
+toggle it on the repository, pass a token from a non-`GITHUB_TOKEN` principal
+to `github-token`:
+
+- **Personal Access Token (PAT)** — simplest. Author of the PR will be your
+  user account. Store the PAT in a secret and pass it as `github-token`.
+- **GitHub App token** — preferred for fleet use. Create a GitHub App with
+  `Contents: Write` and `Pull requests: Write`, install it on the repository,
+  and mint an ephemeral token in the workflow via
+  [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token).
+  The PR will be authored by `<your-app>[bot]`.
 
 ### Inputs
 
