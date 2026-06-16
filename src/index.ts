@@ -1,6 +1,5 @@
 import path from 'node:path';
 import * as core from '@actions/core';
-import { getExecOutput } from '@actions/exec';
 import { detectPackageManager, readActionInputs } from './config.js';
 import { actionsLogger } from './util/logger.js';
 import { NpmRegistry } from './registry/npm-registry.js';
@@ -15,6 +14,7 @@ import { onlyBuiltDependenciesPruner } from './pruners/only-built-dependencies.j
 import type { Pruner, PrunerContext } from './pruners/types.js';
 import type { PrunerName, PrunerReport } from './types.js';
 import { createPullRequest, summarizeRemovals } from './github/pr.js';
+import { resolveDefaultBranch } from './github/default-branch.js';
 import type { Logger } from './util/logger.js';
 
 const REGISTRY: Record<PrunerName, Pruner> = {
@@ -107,7 +107,7 @@ export async function run(): Promise<void> {
     return;
   }
 
-  const base = inputs.prBase || (await resolveDefaultBranch(cwd, logger));
+  const base = inputs.prBase || (await resolveDefaultBranch(inputs.githubToken, cwd, logger));
   const branch = `${inputs.prBranch}/${formatBranchSuffix(ctx.now)}`;
   const pr = await createPullRequest({
     cwd,
@@ -175,21 +175,6 @@ async function writeSummary(reports: PrunerReport[]): Promise<void> {
     ]);
   }
   await summary.write();
-}
-
-async function resolveDefaultBranch(cwd: string, logger: Logger): Promise<string> {
-  const out = await getExecOutput('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], {
-    cwd,
-    ignoreReturnCode: true,
-    silent: true,
-  });
-  if (out.exitCode === 0) {
-    const ref = out.stdout.trim();
-    const slash = ref.lastIndexOf('/');
-    if (slash !== -1) return ref.slice(slash + 1);
-  }
-  logger.warn('Could not determine default branch; falling back to "main".');
-  return 'main';
 }
 
 function formatBranchSuffix(date: Date): string {

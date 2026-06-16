@@ -56214,8 +56214,6 @@ var external_node_path_ = __nccwpck_require__(6760);
 var external_node_path_default = /*#__PURE__*/__nccwpck_require__.n(external_node_path_);
 // EXTERNAL MODULE: ./node_modules/.pnpm/@actions+core@1.11.1/node_modules/@actions/core/lib/core.js
 var core = __nccwpck_require__(9999);
-// EXTERNAL MODULE: ./node_modules/.pnpm/@actions+exec@1.1.1/node_modules/@actions/exec/lib/exec.js
-var exec = __nccwpck_require__(8872);
 // EXTERNAL MODULE: external "node:fs/promises"
 var promises_ = __nccwpck_require__(1455);
 ;// CONCATENATED MODULE: ./src/config.ts
@@ -56794,6 +56792,8 @@ function stripVersionSuffix(version) {
     return version.trim();
 }
 
+// EXTERNAL MODULE: ./node_modules/.pnpm/@actions+exec@1.1.1/node_modules/@actions/exec/lib/exec.js
+var exec = __nccwpck_require__(8872);
 ;// CONCATENATED MODULE: ./src/lockfile/regenerate.ts
 
 
@@ -57298,6 +57298,58 @@ function summarizeRemovals(reports) {
     return reports.flatMap((r) => r.removed);
 }
 
+;// CONCATENATED MODULE: ./src/github/default-branch.ts
+
+
+/**
+ * Resolve the repository's default branch, used as the base for the prune PR.
+ *
+ * The original implementation relied solely on
+ * `git symbolic-ref refs/remotes/origin/HEAD`. However `actions/checkout` does
+ * not populate `refs/remotes/origin/HEAD`, so that command always exited
+ * non-zero and the action fell back to "main". On repositories whose default
+ * branch is not "main" (e.g. "develop" / "master") the subsequent
+ * `pulls.create` call then failed with
+ * `Validation Failed: {"resource":"PullRequest","field":"base","code":"invalid"}`.
+ *
+ * We now ask the GitHub API first — it is authoritative regardless of the
+ * triggering event or checkout configuration — and only fall back to the
+ * event payload and the local git ref when the API is unavailable.
+ */
+async function resolveDefaultBranch(token, cwd, logger) {
+    // 1. Authoritative source: the GitHub API.
+    if (token) {
+        try {
+            const octokit = github.getOctokit(token);
+            const { owner, repo } = github.context.repo;
+            const { data } = await octokit.rest.repos.get({ owner, repo });
+            if (data.default_branch)
+                return data.default_branch;
+        }
+        catch (err) {
+            logger.warn(`Could not resolve default branch via the GitHub API: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+    // 2. Event payload — populated for most webhook events.
+    const fromPayload = github.context.payload.repository?.default_branch;
+    if (fromPayload)
+        return fromPayload;
+    // 3. Local git ref — only set when checkout configured origin/HEAD.
+    const out = await (0,exec.getExecOutput)('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], {
+        cwd,
+        ignoreReturnCode: true,
+        silent: true,
+    });
+    if (out.exitCode === 0) {
+        const ref = out.stdout.trim();
+        const slash = ref.lastIndexOf('/');
+        if (slash !== -1)
+            return ref.slice(slash + 1);
+    }
+    logger.warn('Could not determine default branch; falling back to "main".');
+    return 'main';
+}
+
 ;// CONCATENATED MODULE: ./src/index.ts
 
 
@@ -57391,7 +57443,7 @@ async function run() {
         core.setFailed('github-token is required to create a pull request.');
         return;
     }
-    const base = inputs.prBase || (await resolveDefaultBranch(cwd, logger));
+    const base = inputs.prBase || (await resolveDefaultBranch(inputs.githubToken, cwd, logger));
     const branch = `${inputs.prBranch}/${formatBranchSuffix(ctx.now)}`;
     const pr = await createPullRequest({
         cwd,
@@ -57458,21 +57510,6 @@ async function writeSummary(reports) {
         ]);
     }
     await summary.write();
-}
-async function resolveDefaultBranch(cwd, logger) {
-    const out = await (0,exec.getExecOutput)('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], {
-        cwd,
-        ignoreReturnCode: true,
-        silent: true,
-    });
-    if (out.exitCode === 0) {
-        const ref = out.stdout.trim();
-        const slash = ref.lastIndexOf('/');
-        if (slash !== -1)
-            return ref.slice(slash + 1);
-    }
-    logger.warn('Could not determine default branch; falling back to "main".');
-    return 'main';
 }
 function formatBranchSuffix(date) {
     const pad = (n) => String(n).padStart(2, '0');
