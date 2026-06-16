@@ -14,6 +14,26 @@ import {
 import { loadPnpmLockfile } from '../lockfile/pnpm-lockfile.js';
 
 /**
+ * Extract the bare package name from a pnpm `overrides` key.
+ *
+ * Override keys carry a version selector and may use the nested
+ * `parent>child` syntax, e.g. `tmp@<0.2.6`, `@scope/pkg@<=1.0.0`,
+ * `foo>bar@1.0.0`. The lockfile's resolvedVersions map, by contrast, is keyed
+ * by bare package name (`tmp`, `@scope/pkg`, `bar`). Looking resolved versions
+ * up by the raw override key therefore never matches, which previously made
+ * the pruner conclude the package was "no longer pulled in" and wrongly remove
+ * still-load-bearing overrides (e.g. a security pin). Normalise to the name.
+ */
+export function overrideTargetName(key: string): string {
+  // Nested override syntax targets the last `>`-separated segment.
+  const target = key.includes('>') ? key.slice(key.lastIndexOf('>') + 1) : key;
+  // Strip a trailing `@<selector>`. lastIndexOf('@') === 0 means a scoped name
+  // with no selector (`@scope/pkg`); <0 means an unscoped name with no selector.
+  const at = target.lastIndexOf('@');
+  return at > 0 ? target.slice(0, at) : target;
+}
+
+/**
  * Remove `overrides` entries whose pin is no longer load-bearing — i.e. the
  * natural resolution (without the override) already satisfies the override
  * range. Verified by running `pnpm install --lockfile-only` against a backup
@@ -130,11 +150,12 @@ async function evaluateOverride(
   if (!newLockfile) {
     return { action: 'skip', reason: 'lockfile disappeared after simulation' };
   }
-  const versions = newLockfile.resolvedVersions.get(overrideKey);
+  const targetName = overrideTargetName(overrideKey);
+  const versions = newLockfile.resolvedVersions.get(targetName);
   if (!versions || versions.size === 0) {
     return {
       action: 'remove',
-      reason: `${overrideKey} is no longer pulled into the dependency graph after removing the override`,
+      reason: `${targetName} is no longer pulled into the dependency graph after removing the override`,
     };
   }
   const violators = [...versions].filter((v) => semver.valid(v) && !semver.satisfies(v, range));
@@ -146,7 +167,7 @@ async function evaluateOverride(
   }
   return {
     action: 'skip',
-    reason: `removing the override would resolve ${overrideKey} to ${violators.join(', ')} which does not satisfy "${range}"`,
+    reason: `removing the override would resolve ${targetName} to ${violators.join(', ')} which does not satisfy "${range}"`,
   };
 }
 
