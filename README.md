@@ -147,6 +147,9 @@ up duplicate pull requests. When a previous run's PR is still open:
   is skipped so the PR is not churned with no-op commits.
 - Manual commits pushed onto the PR branch are overwritten on the next run —
   treat the PR as machine-owned and put manual fixes in a separate branch.
+- Open PRs left behind by versions up to v1.0.4 (which used
+  `<pr-branch>/<YYYYMMDDHHMM>` branch names) are closed as superseded and their
+  branches deleted once the fixed-branch PR exists.
 
 If you run the action more than once in the same repository (e.g. several
 `working-directory` values in a monorepo), give each instance a distinct

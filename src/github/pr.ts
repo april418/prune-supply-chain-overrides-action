@@ -120,7 +120,54 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
     });
   }
 
+  await closeSupersededPullRequests(octokit, branch, pr.number, logger);
+
   return { number: pr.number, url: pr.html_url };
+}
+
+// Versions up to v1.0.4 appended a `YYYYMMDDHHMM` suffix to the branch name,
+// so each scheduled run left another open PR behind. Detect those leftovers
+// so they can be closed once the fixed-branch PR exists.
+export function isSupersededBranch(branch: string, ref: string): boolean {
+  const prefix = `${branch}/`;
+  if (!ref.startsWith(prefix)) return false;
+  return /^\d{12}$/.test(ref.slice(prefix.length));
+}
+
+async function closeSupersededPullRequests(
+  octokit: ReturnType<typeof github.getOctokit>,
+  branch: string,
+  currentPrNumber: number,
+  logger: Logger,
+): Promise<void> {
+  const { owner, repo } = github.context.repo;
+  const openPrs = await octokit.paginate(octokit.rest.pulls.list, {
+    owner,
+    repo,
+    state: 'open',
+    per_page: 100,
+  });
+  const superseded = openPrs.filter(
+    (p) =>
+      p.number !== currentPrNumber &&
+      p.head.repo?.full_name === `${owner}/${repo}` &&
+      isSupersededBranch(branch, p.head.ref),
+  );
+  for (const stale of superseded) {
+    try {
+      await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: stale.number,
+        body: `Superseded by #${currentPrNumber}.`,
+      });
+      await octokit.rest.pulls.update({ owner, repo, pull_number: stale.number, state: 'closed' });
+      await octokit.rest.git.deleteRef({ owner, repo, ref: `heads/${stale.head.ref}` });
+      logger.info(`Closed superseded PR #${stale.number} and deleted ${stale.head.ref}`);
+    } catch (err) {
+      logger.warn(`Failed to close superseded PR #${stale.number}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 export function renderBody(reports: PrunerReport[], header?: string): string {
