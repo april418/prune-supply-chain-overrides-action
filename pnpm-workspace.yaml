@@ -24,9 +24,10 @@ packageManagerStrictVersion: true
 # 解消後は本アクション自身が PR で剥がしてくれる予定 (dogfood)。
 overrides:
   vite: 8.0.16
-  # undici < 6.24.0 に GHSA-v9p9-hfj2-hcw8 (high) と複数 moderate の脆弱性。
-  # @actions/core>@actions/http-client>undici 経由で取り込まれる。
-  undici: '>=6.24.0'
+  # undici < 8.5.0 に SOCKS5 経由の TLS 検証バイパス (GHSA-vmh5-mc38-953g)
+  # など high 3 件を含む 7 件の脆弱性。@actions/core>@actions/http-client>
+  # undici 経由で取り込まれ、ncc で dist にもバンドルされる。
+  undici: '>=8.5.0'
 
 # peer dependency のミスマッチを警告ではなくエラーにする。
 strictPeerDependencies: true
