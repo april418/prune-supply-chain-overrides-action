@@ -34,10 +34,28 @@ export async function hasChanges(cwd: string): Promise<boolean> {
   return out.stdout.trim().length > 0;
 }
 
+interface RemoteBranch {
+  sha: string;
+  tree: string;
+}
+
+async function fetchRemoteBranch(cwd: string, remoteUrl: string, branch: string): Promise<RemoteBranch | null> {
+  const fetched = await getExecOutput('git', ['fetch', '--no-tags', remoteUrl, `refs/heads/${branch}`], {
+    cwd,
+    silent: true,
+    ignoreReturnCode: true,
+  });
+  if (fetched.exitCode !== 0) return null;
+  const sha = await getExecOutput('git', ['rev-parse', 'FETCH_HEAD'], { cwd, silent: true });
+  const tree = await getExecOutput('git', ['rev-parse', 'FETCH_HEAD^{tree}'], { cwd, silent: true });
+  return { sha: sha.stdout.trim(), tree: tree.stdout.trim() };
+}
+
 export async function createPullRequest(opts: PullRequestOptions): Promise<PullRequestResult> {
   const { cwd, branch, base, title, commitMessage, changedFiles, reports, logger } = opts;
   const octokit = github.getOctokit(opts.token);
   const { owner, repo } = github.context.repo;
+  const remoteUrl = `https://x-access-token:${opts.token}@github.com/${owner}/${repo}.git`;
 
   await ensureGitIdentity(cwd);
   await exec('git', ['checkout', '-B', branch], { cwd });
@@ -45,16 +63,22 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
     await exec('git', ['add', '--', file], { cwd });
   }
   await exec('git', ['commit', '-m', commitMessage], { cwd });
-  await exec(
-    'git',
-    [
-      'push',
-      '--force-with-lease',
-      `https://x-access-token:${opts.token}@github.com/${owner}/${repo}.git`,
-      `${branch}:${branch}`,
-    ],
-    { cwd, silent: true },
-  );
+
+  // The branch name is stable across runs, so a previous run may have pushed it
+  // already. Compare trees to avoid force-pushing an identical commit (which
+  // would only churn the open PR), and use an explicit lease so a concurrent
+  // update between fetch and push is rejected instead of overwritten.
+  const remote = await fetchRemoteBranch(cwd, remoteUrl, branch);
+  const localTree = (await getExecOutput('git', ['rev-parse', 'HEAD^{tree}'], { cwd, silent: true })).stdout.trim();
+  if (remote && remote.tree === localTree) {
+    logger.info(`Branch ${branch} already has these changes; skipping push.`);
+  } else {
+    await exec(
+      'git',
+      ['push', `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`, remoteUrl, `${branch}:${branch}`],
+      { cwd, silent: true },
+    );
+  }
 
   const existing = await octokit.rest.pulls.list({
     owner,
@@ -66,6 +90,13 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
   let pr: { number: number; html_url: string };
   if (existing.data.length > 0) {
     pr = existing.data[0]!;
+    await octokit.rest.pulls.update({
+      owner,
+      repo,
+      pull_number: pr.number,
+      title,
+      body: renderBody(reports, opts.bodyHeader),
+    });
     logger.info(`Updated existing PR #${pr.number} (${pr.html_url})`);
   } else {
     const created = await octokit.rest.pulls.create({

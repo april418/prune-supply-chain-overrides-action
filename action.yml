@@ -40,7 +40,10 @@ inputs:
     required: false
     default: 'true'
   pr-branch:
-    description: 'Branch name for the pull request. A timestamp suffix is appended.'
+    description: >-
+      Branch name for the pull request. The same branch is reused on every run:
+      when a pull request for it is still open, the branch is force-pushed and
+      the pull request is updated in place instead of opening a duplicate.
     required: false
     default: 'chore/prune-supply-chain-overrides'
   pr-title:

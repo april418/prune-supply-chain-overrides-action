@@ -120,7 +120,7 @@ to `github-token`:
 | `registry` | `https://registry.npmjs.org` | npm registry to query for publish times and manifests. |
 | `dry-run` | `false` | When `true`, do not write files or create a PR. The report is still emitted. |
 | `create-pr` | `true` | When `false`, leave changes in the working tree without opening a PR. |
-| `pr-branch` | `chore/prune-supply-chain-overrides` | Branch prefix. A `YYYYMMDDHHMM` suffix is appended. |
+| `pr-branch` | `chore/prune-supply-chain-overrides` | Branch name for the PR. Reused on every run — see [Repeated runs](#repeated-runs-and-open-prs). |
 | `pr-title` | `chore: prune stale supply-chain overrides` | Title of the PR. |
 | `pr-base` | default branch | Base branch for the PR. |
 | `pr-labels` | _(none)_ | Comma-separated labels to attach to the PR. |
@@ -135,6 +135,22 @@ to `github-token`:
 | `pruned` | JSON report grouped by pruner (matches the PR body). |
 | `pr-number` | Number of the opened PR, when `create-pr` is `true`. |
 | `pr-url` | URL of the opened PR. |
+
+### Repeated runs and open PRs
+
+The action always uses the `pr-branch` name as-is, so scheduled runs never pile
+up duplicate pull requests. When a previous run's PR is still open:
+
+- The branch is force-pushed with the freshly computed prune result (rebased on
+  the current base branch), and the PR title and body are updated in place.
+- If the new result is identical to what the branch already contains, the push
+  is skipped so the PR is not churned with no-op commits.
+- Manual commits pushed onto the PR branch are overwritten on the next run —
+  treat the PR as machine-owned and put manual fixes in a separate branch.
+
+If you run the action more than once in the same repository (e.g. several
+`working-directory` values in a monorepo), give each instance a distinct
+`pr-branch` so the runs do not fight over one branch.
 
 ## How each pruner decides
 

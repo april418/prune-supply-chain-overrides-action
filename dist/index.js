@@ -57229,22 +57229,41 @@ async function hasChanges(cwd) {
     const out = await getExecOutput('git', ['status', '--porcelain'], { cwd, silent: true });
     return out.stdout.trim().length > 0;
 }
+async function fetchRemoteBranch(cwd, remoteUrl, branch) {
+    const fetched = await (0,exec.getExecOutput)('git', ['fetch', '--no-tags', remoteUrl, `refs/heads/${branch}`], {
+        cwd,
+        silent: true,
+        ignoreReturnCode: true,
+    });
+    if (fetched.exitCode !== 0)
+        return null;
+    const sha = await (0,exec.getExecOutput)('git', ['rev-parse', 'FETCH_HEAD'], { cwd, silent: true });
+    const tree = await (0,exec.getExecOutput)('git', ['rev-parse', 'FETCH_HEAD^{tree}'], { cwd, silent: true });
+    return { sha: sha.stdout.trim(), tree: tree.stdout.trim() };
+}
 async function createPullRequest(opts) {
     const { cwd, branch, base, title, commitMessage, changedFiles, reports, logger } = opts;
     const octokit = github.getOctokit(opts.token);
     const { owner, repo } = github.context.repo;
+    const remoteUrl = `https://x-access-token:${opts.token}@github.com/${owner}/${repo}.git`;
     await ensureGitIdentity(cwd);
     await (0,exec.exec)('git', ['checkout', '-B', branch], { cwd });
     for (const file of changedFiles) {
         await (0,exec.exec)('git', ['add', '--', file], { cwd });
     }
     await (0,exec.exec)('git', ['commit', '-m', commitMessage], { cwd });
-    await (0,exec.exec)('git', [
-        'push',
-        '--force-with-lease',
-        `https://x-access-token:${opts.token}@github.com/${owner}/${repo}.git`,
-        `${branch}:${branch}`,
-    ], { cwd, silent: true });
+    // The branch name is stable across runs, so a previous run may have pushed it
+    // already. Compare trees to avoid force-pushing an identical commit (which
+    // would only churn the open PR), and use an explicit lease so a concurrent
+    // update between fetch and push is rejected instead of overwritten.
+    const remote = await fetchRemoteBranch(cwd, remoteUrl, branch);
+    const localTree = (await (0,exec.getExecOutput)('git', ['rev-parse', 'HEAD^{tree}'], { cwd, silent: true })).stdout.trim();
+    if (remote && remote.tree === localTree) {
+        logger.info(`Branch ${branch} already has these changes; skipping push.`);
+    }
+    else {
+        await (0,exec.exec)('git', ['push', `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`, remoteUrl, `${branch}:${branch}`], { cwd, silent: true });
+    }
     const existing = await octokit.rest.pulls.list({
         owner,
         repo,
@@ -57254,6 +57273,13 @@ async function createPullRequest(opts) {
     let pr;
     if (existing.data.length > 0) {
         pr = existing.data[0];
+        await octokit.rest.pulls.update({
+            owner,
+            repo,
+            pull_number: pr.number,
+            title,
+            body: renderBody(reports, opts.bodyHeader),
+        });
         logger.info(`Updated existing PR #${pr.number} (${pr.html_url})`);
     }
     else {
@@ -57464,11 +57490,10 @@ async function run() {
         return;
     }
     const base = inputs.prBase || (await resolveDefaultBranch(inputs.githubToken, cwd, logger));
-    const branch = `${inputs.prBranch}/${formatBranchSuffix(ctx.now)}`;
     const pr = await createPullRequest({
         cwd,
         token: inputs.githubToken,
-        branch,
+        branch: inputs.prBranch,
         base,
         title: inputs.prTitle,
         commitMessage: inputs.commitMessage,
@@ -57530,10 +57555,6 @@ async function writeSummary(reports) {
         ]);
     }
     await summary.write();
-}
-function formatBranchSuffix(date) {
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}`;
 }
 run().catch((err) => {
     core.setFailed(err instanceof Error ? err.message : String(err));

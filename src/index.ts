@@ -108,11 +108,10 @@ export async function run(): Promise<void> {
   }
 
   const base = inputs.prBase || (await resolveDefaultBranch(inputs.githubToken, cwd, logger));
-  const branch = `${inputs.prBranch}/${formatBranchSuffix(ctx.now)}`;
   const pr = await createPullRequest({
     cwd,
     token: inputs.githubToken,
-    branch,
+    branch: inputs.prBranch,
     base,
     title: inputs.prTitle,
     commitMessage: inputs.commitMessage,
@@ -175,11 +174,6 @@ async function writeSummary(reports: PrunerReport[]): Promise<void> {
     ]);
   }
   await summary.write();
-}
-
-function formatBranchSuffix(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}`;
 }
 
 run().catch((err) => {
