@@ -11,7 +11,7 @@ import {
   isCollectionEmpty,
   removeKey,
 } from '../files/pnpm-workspace.js';
-import { loadPnpmLockfile } from '../lockfile/pnpm-lockfile.js';
+import { loadPnpmLockfile, type PnpmLockfile } from '../lockfile/pnpm-lockfile.js';
 
 // pnpm's own parent>child delimiter (parse-overrides). A `>` preceded by a
 // space, `|` or `@` belongs to a range selector such as `foo@>=1.0.0 <2`.
@@ -39,6 +39,12 @@ export function overrideTargetName(key: string): string {
  * natural resolution (without the override) already satisfies the override
  * range. Verified by running `pnpm install --lockfile-only` against a backup
  * copy of pnpm-workspace.yaml / pnpm-lock.yaml.
+ *
+ * Removals are evaluated cumulatively: each candidate is tried on top of the
+ * removals already accepted, and every accepted override is re-checked against
+ * the resulting lockfile. Overlapping rules for the same package (e.g.
+ * `tmp@<=0.2.3` and `tmp@<0.2.6`) each look redundant while the other one is
+ * still in place, so evaluating them in isolation would drop all of them.
  */
 export const overridesPruner: Pruner = {
   name: 'overrides',
@@ -67,9 +73,11 @@ export const overridesPruner: Pruner = {
     }
 
     const toRemoveKeys: string[] = [];
+    let wsAccepted = wsBackup;
+    let lockAccepted = lockBackup;
     try {
       for (const { key, value: range } of entries) {
-        const decision = await evaluateOverride(ctx, key, range);
+        const decision = await evaluateOverride(ctx, key, range, removed);
         if (decision.action === 'remove') {
           toRemoveKeys.push(key);
           removed.push({
@@ -79,11 +87,13 @@ export const overridesPruner: Pruner = {
             reason: decision.reason,
             file: ctx.workspace.filePath,
           });
+          wsAccepted = await readFile(ctx.workspace.filePath, 'utf8');
+          lockAccepted = await readFile(lockfilePath, 'utf8');
         } else {
           skipped.push({ key, reason: decision.reason });
+          await restore(ctx.workspace.filePath, wsAccepted);
+          await writeFile(lockfilePath, lockAccepted, 'utf8');
         }
-        await restore(ctx.workspace.filePath, wsBackup);
-        await writeFile(lockfilePath, lockBackup, 'utf8');
       }
     } finally {
       await restore(ctx.workspace.filePath, wsBackup);
@@ -105,6 +115,7 @@ async function evaluateOverride(
   ctx: PrunerContext,
   overrideKey: string,
   range: string,
+  alreadyRemoved: readonly PrunedEntry[],
 ): Promise<{ action: 'remove' | 'skip'; reason: string }> {
   if (!ctx.workspace) return { action: 'skip', reason: 'no pnpm-workspace.yaml' };
 
@@ -151,6 +162,13 @@ async function evaluateOverride(
   if (!newLockfile) {
     return { action: 'skip', reason: 'lockfile disappeared after simulation' };
   }
+  const regressions = findUnsatisfiedOverrides(newLockfile, alreadyRemoved);
+  if (regressions.length > 0) {
+    return {
+      action: 'skip',
+      reason: `removing the override would also undo an already-removed override: ${regressions.join('; ')}`,
+    };
+  }
   const targetName = overrideTargetName(overrideKey);
   const versions = newLockfile.resolvedVersions.get(targetName);
   if (!versions || versions.size === 0) {
@@ -159,7 +177,7 @@ async function evaluateOverride(
       reason: `${targetName} is no longer pulled into the dependency graph after removing the override`,
     };
   }
-  const violators = [...versions].filter((v) => semver.valid(v) && !semver.satisfies(v, range));
+  const violators = unsatisfied(versions, range);
   if (violators.length === 0) {
     return {
       action: 'remove',
@@ -170,6 +188,33 @@ async function evaluateOverride(
     action: 'skip',
     reason: `removing the override would resolve ${targetName} to ${violators.join(', ')} which does not satisfy "${range}"`,
   };
+}
+
+/**
+ * Check removed overrides against a lockfile. Returns one message per removed
+ * override whose target now resolves to a version outside the override's
+ * range; an empty array means every removal still holds.
+ */
+export function findUnsatisfiedOverrides(
+  lockfile: PnpmLockfile,
+  removedOverrides: readonly PrunedEntry[],
+): string[] {
+  const out: string[] = [];
+  for (const { key, value: range } of removedOverrides) {
+    if (range === undefined) continue;
+    const name = overrideTargetName(key);
+    const versions = lockfile.resolvedVersions.get(name);
+    if (!versions) continue;
+    const violators = unsatisfied(versions, range);
+    if (violators.length > 0) {
+      out.push(`${key} (${name} ${violators.join(', ')} does not satisfy "${range}")`);
+    }
+  }
+  return out;
+}
+
+function unsatisfied(versions: Iterable<string>, range: string): string[] {
+  return [...versions].filter((v) => semver.valid(v) && !semver.satisfies(v, range));
 }
 
 async function restore(filePath: string, original: string): Promise<void> {

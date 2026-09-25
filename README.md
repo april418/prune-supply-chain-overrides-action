@@ -185,14 +185,19 @@ the natural resolution catches up, the override is a no-op.
 The pruner verifies this by:
 
 1. Backing up `pnpm-workspace.yaml` and `pnpm-lock.yaml`.
-2. Removing **one** override entry at a time and running
+2. Removing **one** override entry at a time, on top of the entries already
+   accepted for removal, and running
    `pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile`.
-3. Checking that every resolved version of the override key in the new
-   lockfile satisfies the original range.
-4. Restoring the backup before testing the next entry.
+3. Checking that every resolved version of the override's target package in
+   the new lockfile satisfies the original range — and that the same still
+   holds for every override accepted earlier.
+4. Keeping that state when the entry is removable, or rolling back to the
+   last accepted state otherwise.
 
-If `pnpm install` fails or any resolved version violates the range, the entry
-is kept.
+If `pnpm install` fails or any resolved version violates a range, the entry
+is kept. Evaluating removals cumulatively matters when several overrides
+cover the same package (e.g. `tmp@<=0.2.3` and `tmp@<0.2.6`): each one looks
+redundant while the other is in place, but removing both is not safe.
 
 ### `onlyBuiltDependencies`
 
