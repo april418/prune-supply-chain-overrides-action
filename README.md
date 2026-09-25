@@ -199,6 +199,10 @@ is kept. Evaluating removals cumulatively matters when several overrides
 cover the same package (e.g. `tmp@<=0.2.3` and `tmp@<0.2.6`): each one looks
 redundant while the other is in place, but removing both is not safe.
 
+After all pruners run, the regenerated `pnpm-lock.yaml` is checked against
+every removed override once more, and the action fails instead of opening a
+pull request if any of them no longer holds.
+
 ### `onlyBuiltDependencies`
 
 The pnpm setting `onlyBuiltDependencies: []` blocks all lifecycle scripts

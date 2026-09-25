@@ -59550,6 +59550,17 @@ async function run() {
         if (regenerated && !changedFiles.includes(regenerated)) {
             changedFiles.push(regenerated);
         }
+        // The overrides pruner verified its removals before the other pruners'
+        // edits were written, so re-check them against the lockfile actually
+        // being committed. The resulting PR is made with GITHUB_TOKEN and gets no CI.
+        const finalLockfile = regenerated ? await loadPnpmLockfile(cwd) : null;
+        if (finalLockfile) {
+            const removedOverrides = reports.flatMap((r) => (r.pruner === 'overrides' ? r.removed : []));
+            const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides);
+            if (regressions.length > 0) {
+                throw new Error(`Regenerated pnpm-lock.yaml no longer satisfies removed overrides: ${regressions.join('; ')}`);
+            }
+        }
     }
     await writeSummary(reports);
     if (inputs.dryRun) {
