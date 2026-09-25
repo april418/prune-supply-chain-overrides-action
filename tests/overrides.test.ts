@@ -24,4 +24,11 @@ describe('overrideTargetName', () => {
     expect(overrideTargetName('foo@1>@scope/bar@<2.0.0')).toBe('@scope/bar');
     expect(overrideTargetName('foo>bar')).toBe('bar');
   });
+
+  it('does not treat the ">" of a ">=" / ">" selector as the parent>child delimiter', () => {
+    expect(overrideTargetName('dompurify@>=1.0.10 <3.4.0')).toBe('dompurify');
+    expect(overrideTargetName('brace-expansion@>=2.0.0 <2.1.4')).toBe('brace-expansion');
+    expect(overrideTargetName('@scope/pkg@>1.0.0')).toBe('@scope/pkg');
+    expect(overrideTargetName('foo@>=1 <2>bar@>=3.0.0 <3.1.0')).toBe('bar');
+  });
 });

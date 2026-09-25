@@ -13,22 +13,23 @@ import {
 } from '../files/pnpm-workspace.js';
 import { loadPnpmLockfile } from '../lockfile/pnpm-lockfile.js';
 
+// pnpm's own parent>child delimiter (parse-overrides). A `>` preceded by a
+// space, `|` or `@` belongs to a range selector such as `foo@>=1.0.0 <2`.
+const NESTED_DELIMITER = /[^ |@]>/;
+
 /**
  * Extract the bare package name from a pnpm `overrides` key.
  *
  * Override keys carry a version selector and may use the nested
- * `parent>child` syntax, e.g. `tmp@<0.2.6`, `@scope/pkg@<=1.0.0`,
- * `foo>bar@1.0.0`. The lockfile's resolvedVersions map, by contrast, is keyed
- * by bare package name (`tmp`, `@scope/pkg`, `bar`). Looking resolved versions
- * up by the raw override key therefore never matches, which previously made
- * the pruner conclude the package was "no longer pulled in" and wrongly remove
- * still-load-bearing overrides (e.g. a security pin). Normalise to the name.
+ * `parent>child` syntax, e.g. `tmp@<0.2.6`, `@scope/pkg@>=1.0.0 <2`,
+ * `foo>bar@1.0.0`. The lockfile's resolvedVersions map is keyed by bare
+ * package name, so lookups must use the name this returns.
  */
 export function overrideTargetName(key: string): string {
-  // Nested override syntax targets the last `>`-separated segment.
-  const target = key.includes('>') ? key.slice(key.lastIndexOf('>') + 1) : key;
-  // Strip a trailing `@<selector>`. lastIndexOf('@') === 0 means a scoped name
-  // with no selector (`@scope/pkg`); <0 means an unscoped name with no selector.
+  const delimiter = key.search(NESTED_DELIMITER);
+  const target = delimiter === -1 ? key : key.slice(delimiter + 2);
+  // lastIndexOf('@') === 0 means a scoped name with no selector (`@scope/pkg`);
+  // <0 means an unscoped name with no selector.
   const at = target.lastIndexOf('@');
   return at > 0 ? target.slice(0, at) : target;
 }
