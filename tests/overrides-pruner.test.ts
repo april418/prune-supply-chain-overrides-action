@@ -84,9 +84,9 @@ overrides:
   tmp@<0.2.6: '>=0.2.6'
 `;
 
-async function setup(): Promise<PrunerContext> {
+async function setup(workspace = WORKSPACE): Promise<PrunerContext> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'overrides-pruner-test-'));
-  await writeFile(path.join(cwd, 'pnpm-workspace.yaml'), WORKSPACE, 'utf8');
+  await writeFile(path.join(cwd, 'pnpm-workspace.yaml'), workspace, 'utf8');
   await fakePnpmInstall(cwd);
   return {
     cwd,
@@ -121,6 +121,23 @@ describe('overridesPruner', () => {
     expect([...resolved.get('dompurify')!]).toEqual(['3.4.8']);
     // Overlapping rules are still redundant, so some of them should go.
     expect(report.removed.length).toBeGreaterThan(0);
+  });
+
+  it('keeps a rule whose own range still holds when removing it undoes an earlier removal', async () => {
+    // Removing the first rule is safe while the second one lifts 0.0.33 to
+    // 0.2.7. The second rule's own range (>=0.0.1) accepts 0.0.33, so only the
+    // re-check of the first removal can tell that it must stay.
+    const ctx = await setup(`overrides:
+  tmp@<=0.2.3: '>=0.2.4'
+  tmp@<0.2.6: '>=0.0.1'
+`);
+
+    const report = await overridesPruner.run(ctx);
+
+    expect(report.removed.map((e) => e.key)).toEqual(['tmp@<=0.2.3']);
+    expect(report.skipped).toEqual([
+      { key: 'tmp@<0.2.6', reason: expect.stringContaining('tmp@<=0.2.3') },
+    ]);
   });
 });
 
