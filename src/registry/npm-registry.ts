@@ -1,5 +1,6 @@
 import semver from 'semver';
 import { PrunerError, asError } from '../util/errors.js';
+import type { Logger } from '../util/logger.js';
 
 /** Subset of an npm packument we care about. */
 export interface Packument {
@@ -26,9 +27,18 @@ export interface ReleaseAgeInfo {
   latestStablePublishedAt: Date | null;
 }
 
+/** Outcome of the distinct requests a registry made (cached repeats count once). */
+export interface RegistryStats {
+  succeeded: number;
+  /** Error message of each failed request. */
+  failed: string[];
+}
+
 export class NpmRegistry {
   private readonly packumentCache = new Map<string, Promise<Packument>>();
   private readonly manifestCache = new Map<string, Promise<VersionManifest>>();
+  private succeeded = 0;
+  private readonly failed: string[] = [];
 
   constructor(
     private readonly baseUrl: string,
@@ -54,6 +64,7 @@ export class NpmRegistry {
       .catch((err) => {
         throw new PrunerError(`Failed to fetch packument for ${name}: ${asError(err).message}`, err);
       });
+    this.track(promise);
     this.packumentCache.set(name, promise);
     return promise;
   }
@@ -77,8 +88,24 @@ export class NpmRegistry {
           err,
         );
       });
+    this.track(promise);
     this.manifestCache.set(cacheKey, promise);
     return promise;
+  }
+
+  stats(): RegistryStats {
+    return { succeeded: this.succeeded, failed: [...this.failed] };
+  }
+
+  private track(request: Promise<unknown>): void {
+    request.then(
+      () => {
+        this.succeeded += 1;
+      },
+      (err) => {
+        this.failed.push(asError(err).message);
+      },
+    );
   }
 
   /**
@@ -116,6 +143,27 @@ export class NpmRegistry {
     const iso = packument.time[version];
     return iso ? new Date(iso) : null;
   }
+}
+
+/**
+ * Pruners keep an entry whose registry lookup failed, so a registry that is
+ * unreachable (or a fetch that silently breaks) would otherwise look like
+ * "nothing to prune". Warns on partial failure and throws when every request
+ * failed.
+ */
+export function assertRegistryReachable(stats: RegistryStats, logger: Logger): void {
+  const { succeeded, failed } = stats;
+  if (failed.length === 0) return;
+  if (succeeded === 0) {
+    throw new Error(
+      `All ${failed.length} npm registry request(s) failed, so no entry could be verified. ` +
+        `First error: ${failed[0]}`,
+    );
+  }
+  logger.warn(
+    `${failed.length} npm registry request(s) failed; the affected entries were kept. ` +
+      `First error: ${failed[0]}`,
+  );
 }
 
 function encodePackageName(name: string): string {

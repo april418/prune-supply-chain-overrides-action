@@ -2,7 +2,7 @@ import path from 'node:path';
 import * as core from '@actions/core';
 import { detectPackageManager, readActionInputs } from './config.js';
 import { actionsLogger } from './util/logger.js';
-import { NpmRegistry } from './registry/npm-registry.js';
+import { NpmRegistry, assertRegistryReachable } from './registry/npm-registry.js';
 import { loadPnpmWorkspace, savePnpmWorkspace } from './files/pnpm-workspace.js';
 import { loadPackageJson, savePackageJson } from './files/package-json.js';
 import { loadNpmrc, saveNpmrc } from './files/npmrc.js';
@@ -71,6 +71,7 @@ export async function run(): Promise<void> {
     });
     reports.push(report);
   }
+  assertRegistryReachable(ctx.registry.stats(), logger);
 
   const changedFiles = await persistChanges(ctx, reports, inputs.dryRun, logger);
   const totalRemoved = summarizeRemovals(reports).length;

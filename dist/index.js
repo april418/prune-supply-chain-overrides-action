@@ -59413,6 +59413,8 @@ class NpmRegistry {
     fetchImpl;
     packumentCache = new Map();
     manifestCache = new Map();
+    succeeded = 0;
+    failed = [];
     constructor(baseUrl, fetchImpl = globalThis.fetch) {
         this.baseUrl = baseUrl;
         this.fetchImpl = fetchImpl;
@@ -59437,6 +59439,7 @@ class NpmRegistry {
             .catch((err) => {
             throw new PrunerError(`Failed to fetch packument for ${name}: ${asError(err).message}`, err);
         });
+        this.track(promise);
         this.packumentCache.set(name, promise);
         return promise;
     }
@@ -59457,8 +59460,19 @@ class NpmRegistry {
             .catch((err) => {
             throw new PrunerError(`Failed to fetch manifest for ${cacheKey}: ${asError(err).message}`, err);
         });
+        this.track(promise);
         this.manifestCache.set(cacheKey, promise);
         return promise;
+    }
+    stats() {
+        return { succeeded: this.succeeded, failed: [...this.failed] };
+    }
+    track(request) {
+        request.then(() => {
+            this.succeeded += 1;
+        }, (err) => {
+            this.failed.push(asError(err).message);
+        });
     }
     /**
      * Resolve the highest version in `range` whose publish age is at least
@@ -59490,6 +59504,23 @@ class NpmRegistry {
         const iso = packument.time[version];
         return iso ? new Date(iso) : null;
     }
+}
+/**
+ * Pruners keep an entry whose registry lookup failed, so a registry that is
+ * unreachable (or a fetch that silently breaks) would otherwise look like
+ * "nothing to prune". Warns on partial failure and throws when every request
+ * failed.
+ */
+function assertRegistryReachable(stats, logger) {
+    const { succeeded, failed } = stats;
+    if (failed.length === 0)
+        return;
+    if (succeeded === 0) {
+        throw new Error(`All ${failed.length} npm registry request(s) failed, so no entry could be verified. ` +
+            `First error: ${failed[0]}`);
+    }
+    logger.warn(`${failed.length} npm registry request(s) failed; the affected entries were kept. ` +
+        `First error: ${failed[0]}`);
 }
 function encodePackageName(name) {
     if (name.startsWith('@')) {
@@ -60693,6 +60724,7 @@ async function run() {
         });
         reports.push(report);
     }
+    assertRegistryReachable(ctx.registry.stats(), logger);
     const changedFiles = await persistChanges(ctx, reports, inputs.dryRun, logger);
     const totalRemoved = summarizeRemovals(reports).length;
     const changed = changedFiles.length > 0 && totalRemoved > 0;
