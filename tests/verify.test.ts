@@ -53,9 +53,9 @@ describe('regenerateAndVerify', () => {
     const cwd = await projectWithLockfile();
     resolveTmpTo('0.2.7');
 
-    await expect(regenerateAndVerify(cwd, reports, null, consoleLogger)).resolves.toBe(
+    await expect(regenerateAndVerify(cwd, reports, null, consoleLogger)).resolves.toEqual([
       path.join(cwd, 'pnpm-lock.yaml'),
-    );
+    ]);
   });
 
   it('throws when the regenerated lockfile brings back a removed override target', async () => {
@@ -70,7 +70,7 @@ describe('regenerateAndVerify', () => {
   it('returns null without running pnpm when there is no lockfile', async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), 'verify-test-'));
 
-    await expect(regenerateAndVerify(cwd, reports, null, consoleLogger)).resolves.toBeNull();
+    await expect(regenerateAndVerify(cwd, reports, null, consoleLogger)).resolves.toEqual([]);
     expect(execMock).not.toHaveBeenCalled();
   });
 });

@@ -9,17 +9,17 @@ import { regeneratePnpmLockfile } from './regenerate.js';
  * Regenerate `pnpm-lock.yaml` for the pruned files on disk and re-check every
  * removed override against it. `baseline` is the lockfile from before any
  * pruning. Throws when the lockfile cannot be regenerated or a removed
- * override no longer holds; returns the lockfile path, or null when the
- * project has no lockfile.
+ * override no longer holds; returns the lockfile paths, or an empty array when
+ * the project has no lockfile.
  */
 export async function regenerateAndVerify(
   cwd: string,
   reports: readonly PrunerReport[],
   baseline: PnpmLockfile | null,
   logger: Logger,
-): Promise<string | null> {
+): Promise<string[]> {
   const regenerated = await regeneratePnpmLockfile(cwd, logger);
-  if (!regenerated) return null;
+  if (regenerated.length === 0) return regenerated;
   // The overrides pruner verified its removals before the other pruners'
   // edits were written, so re-check them against the lockfile actually
   // produced. The resulting PR is made with GITHUB_TOKEN and gets no CI.

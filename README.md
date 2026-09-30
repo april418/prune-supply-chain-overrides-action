@@ -63,6 +63,10 @@ jobs:
           working-directory: .
 ```
 
+With `sharedWorkspaceLockfile: false` (or `shared-workspace-lockfile=false`
+in `.npmrc`), every `pnpm-lock.yaml` in the workspace outside `node_modules`
+is read as one, and all of them are regenerated and committed together.
+
 `pnpm` must be on `PATH` for any pnpm project. The `overrides` pruner runs
 `pnpm install --lockfile-only` to simulate removal, and after **any** prune
 the action re-runs `pnpm install --lockfile-only` once more so that

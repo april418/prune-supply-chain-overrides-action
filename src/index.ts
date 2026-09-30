@@ -91,7 +91,6 @@ export async function run(): Promise<void> {
   }
 
   if (packageManager === 'pnpm' && ctx.lockfile) {
-    const lockfilePath = ctx.lockfile.filePath;
     const verify = () =>
       logger.group('Regenerate pnpm-lock.yaml', () =>
         regenerateAndVerify(cwd, reports, ctx.lockfile, logger),
@@ -101,16 +100,15 @@ export async function run(): Promise<void> {
       // while the lockfile is regenerated and checked against them.
       const touched = [ctx.workspace?.filePath, ctx.packageJson?.filePath, ctx.npmrc?.filePath];
       await withFilesRestored(
-        [lockfilePath, ...touched.filter((p): p is string => p !== undefined)],
+        [...ctx.lockfile.filePaths, ...touched.filter((p): p is string => p !== undefined)],
         async () => {
           await persistChanges(ctx, reports, false, logger);
           await verify();
         },
       );
     } else {
-      const regenerated = await verify();
-      if (regenerated && !changedFiles.includes(regenerated)) {
-        changedFiles.push(regenerated);
+      for (const regenerated of await verify()) {
+        if (!changedFiles.includes(regenerated)) changedFiles.push(regenerated);
       }
     }
   }

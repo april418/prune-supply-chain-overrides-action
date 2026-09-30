@@ -7330,6 +7330,293 @@ exports.Deprecation = Deprecation;
 
 /***/ }),
 
+/***/ 5153:
+/***/ ((module) => {
+
+const { hasOwnProperty } = Object.prototype
+
+const encode = (obj, opt = {}) => {
+  if (typeof opt === 'string') {
+    opt = { section: opt }
+  }
+  opt.align = opt.align === true
+  opt.newline = opt.newline === true
+  opt.sort = opt.sort === true
+  opt.whitespace = opt.whitespace === true || opt.align === true
+  // The `typeof` check is required because accessing the `process` directly fails on browsers.
+  /* istanbul ignore next */
+  opt.platform = opt.platform || (typeof process !== 'undefined' && process.platform)
+  opt.bracketedArray = opt.bracketedArray !== false
+
+  /* istanbul ignore next */
+  const eol = opt.platform === 'win32' ? '\r\n' : '\n'
+  const separator = opt.whitespace ? ' = ' : '='
+  const children = []
+
+  const keys = opt.sort ? Object.keys(obj).sort() : Object.keys(obj)
+
+  let padToChars = 0
+  // If aligning on the separator, then padToChars is determined as follows:
+  // 1. Get the keys
+  // 2. Exclude keys pointing to objects unless the value is null or an array
+  // 3. Add `[]` to array keys
+  // 4. Ensure non empty set of keys
+  // 5. Reduce the set to the longest `safe` key
+  // 6. Get the `safe` length
+  if (opt.align) {
+    padToChars = safe(
+      (
+        keys
+          .filter(k => obj[k] === null || Array.isArray(obj[k]) || typeof obj[k] !== 'object')
+          .map(k => Array.isArray(obj[k]) ? `${k}[]` : k)
+      )
+        .concat([''])
+        .reduce((a, b) => safe(a).length >= safe(b).length ? a : b)
+    ).length
+  }
+
+  let out = ''
+  const arraySuffix = opt.bracketedArray ? '[]' : ''
+
+  for (const k of keys) {
+    const val = obj[k]
+    if (val && Array.isArray(val)) {
+      for (const item of val) {
+        out += safe(`${k}${arraySuffix}`).padEnd(padToChars, ' ') + separator + safe(item) + eol
+      }
+    } else if (val && typeof val === 'object') {
+      children.push(k)
+    } else {
+      out += safe(k).padEnd(padToChars, ' ') + separator + safe(val) + eol
+    }
+  }
+
+  if (opt.section && out.length) {
+    out = '[' + safe(opt.section) + ']' + (opt.newline ? eol + eol : eol) + out
+  }
+
+  for (const k of children) {
+    const nk = splitSections(k, '.').join('\\.')
+    const section = (opt.section ? opt.section + '.' : '') + nk
+    const child = encode(obj[k], {
+      ...opt,
+      section,
+    })
+    if (out.length && child.length) {
+      out += eol
+    }
+
+    out += child
+  }
+
+  return out
+}
+
+function splitSections (str, separator) {
+  var lastMatchIndex = 0
+  var lastSeparatorIndex = 0
+  var nextIndex = 0
+  var sections = []
+
+  do {
+    nextIndex = str.indexOf(separator, lastMatchIndex)
+
+    if (nextIndex !== -1) {
+      lastMatchIndex = nextIndex + separator.length
+
+      if (nextIndex > 0 && str[nextIndex - 1] === '\\') {
+        continue
+      }
+
+      sections.push(str.slice(lastSeparatorIndex, nextIndex))
+      lastSeparatorIndex = nextIndex + separator.length
+    }
+  } while (nextIndex !== -1)
+
+  sections.push(str.slice(lastSeparatorIndex))
+
+  return sections
+}
+
+const decode = (str, opt = {}) => {
+  opt.bracketedArray = opt.bracketedArray !== false
+  const out = Object.create(null)
+  let p = out
+  let section = null
+  //          section          |key      = value
+  const re = /^\[([^\]]*)\]\s*$|^([^=]+)(=(.*))?$/i
+  const lines = str.split(/[\r\n]+/g)
+  const duplicates = {}
+
+  for (const line of lines) {
+    if (!line || line.match(/^\s*[;#]/) || line.match(/^\s*$/)) {
+      continue
+    }
+    const match = line.match(re)
+    if (!match) {
+      continue
+    }
+    if (match[1] !== undefined) {
+      section = unsafe(match[1])
+      if (section === '__proto__') {
+        // not allowed
+        // keep parsing the section, but don't attach it.
+        p = Object.create(null)
+        continue
+      }
+      p = out[section] = out[section] || Object.create(null)
+      continue
+    }
+    const keyRaw = unsafe(match[2])
+    let isArray
+    if (opt.bracketedArray) {
+      isArray = keyRaw.length > 2 && keyRaw.slice(-2) === '[]'
+    } else {
+      duplicates[keyRaw] = (duplicates?.[keyRaw] || 0) + 1
+      isArray = duplicates[keyRaw] > 1
+    }
+    const key = isArray && keyRaw.endsWith('[]')
+      ? keyRaw.slice(0, -2) : keyRaw
+
+    if (key === '__proto__') {
+      continue
+    }
+    const valueRaw = match[3] ? unsafe(match[4]) : true
+    const value = valueRaw === 'true' ||
+      valueRaw === 'false' ||
+      valueRaw === 'null' ? JSON.parse(valueRaw)
+      : valueRaw
+
+    // Convert keys with '[]' suffix to an array
+    if (isArray) {
+      if (!hasOwnProperty.call(p, key)) {
+        p[key] = []
+      } else if (!Array.isArray(p[key])) {
+        p[key] = [p[key]]
+      }
+    }
+
+    // safeguard against resetting a previously defined
+    // array by accidentally forgetting the brackets
+    if (Array.isArray(p[key])) {
+      p[key].push(value)
+    } else {
+      p[key] = value
+    }
+  }
+
+  // {a:{y:1},"a.b":{x:2}} --> {a:{y:1,b:{x:2}}}
+  // use a filter to return the keys that have to be deleted.
+  const remove = []
+  for (const k of Object.keys(out)) {
+    if (!hasOwnProperty.call(out, k) ||
+      typeof out[k] !== 'object' ||
+      Array.isArray(out[k])) {
+      continue
+    }
+
+    // see if the parent section is also an object.
+    // if so, add it to that, and mark this one for deletion
+    const parts = splitSections(k, '.')
+    p = out
+    const l = parts.pop()
+    const nl = l.replace(/\\\./g, '.')
+    for (const part of parts) {
+      if (part === '__proto__') {
+        continue
+      }
+      if (!hasOwnProperty.call(p, part) || typeof p[part] !== 'object') {
+        p[part] = Object.create(null)
+      }
+      p = p[part]
+    }
+    if (p === out && nl === l) {
+      continue
+    }
+
+    p[nl] = out[k]
+    remove.push(k)
+  }
+  for (const del of remove) {
+    delete out[del]
+  }
+
+  return out
+}
+
+const isQuoted = val => {
+  return (val.startsWith('"') && val.endsWith('"')) ||
+    (val.startsWith("'") && val.endsWith("'"))
+}
+
+const safe = val => {
+  if (
+    typeof val !== 'string' ||
+    val.match(/[=\r\n]/) ||
+    val.match(/^\[/) ||
+    (val.length > 1 && isQuoted(val)) ||
+    val !== val.trim()
+  ) {
+    return JSON.stringify(val)
+  }
+  return val.split(';').join('\\;').split('#').join('\\#')
+}
+
+const unsafe = val => {
+  val = (val || '').trim()
+  if (isQuoted(val)) {
+    // remove the single quotes before calling JSON.parse
+    if (val.charAt(0) === "'") {
+      val = val.slice(1, -1)
+    }
+    try {
+      val = JSON.parse(val)
+    } catch {
+      // ignore errors
+    }
+  } else {
+    // walk the val to find the first not-escaped ; character
+    let esc = false
+    let unesc = ''
+    for (let i = 0, l = val.length; i < l; i++) {
+      const c = val.charAt(i)
+      if (esc) {
+        if ('\\;#'.indexOf(c) !== -1) {
+          unesc += c
+        } else {
+          unesc += '\\' + c
+        }
+
+        esc = false
+      } else if (';#'.indexOf(c) !== -1) {
+        break
+      } else if (c === '\\') {
+        esc = true
+      } else {
+        unesc += c
+      }
+    }
+    if (esc) {
+      unesc += '\\'
+    }
+
+    return unesc.trim()
+  }
+  return val
+}
+
+module.exports = {
+  parse: decode,
+  decode,
+  stringify: encode,
+  encode,
+  safe,
+  unsafe,
+}
+
+
+/***/ }),
+
 /***/ 8068:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -59923,26 +60210,109 @@ function removeArrayValues(data, key, values) {
     return removed;
 }
 
+// EXTERNAL MODULE: ./node_modules/.pnpm/ini@5.0.0/node_modules/ini/lib/ini.js
+var ini = __nccwpck_require__(5153);
 ;// CONCATENATED MODULE: ./src/lockfile/pnpm-lockfile.ts
 
 
 
 
+
+/**
+ * Load the project's lockfiles as one view: resolved versions and recorded
+ * overrides are merged across every file {@link findPnpmLockfiles} returns.
+ * Returns null when there is none.
+ */
 async function loadPnpmLockfile(cwd) {
-    const filePath = external_node_path_default().join(cwd, 'pnpm-lock.yaml');
+    const filePaths = await findPnpmLockfiles(cwd);
+    if (filePaths.length === 0)
+        return null;
+    const parts = await Promise.all(filePaths.map(parseLockfileFile));
+    const resolvedVersions = new Map();
+    const recordedOverrides = {};
+    for (const part of parts) {
+        for (const [name, versions] of part.resolvedVersions) {
+            const bucket = resolvedVersions.get(name) ?? new Set();
+            for (const v of versions)
+                bucket.add(v);
+            resolvedVersions.set(name, bucket);
+        }
+        Object.assign(recordedOverrides, part.recordedOverrides);
+    }
+    return {
+        filePath: filePaths[0],
+        filePaths,
+        lockfileVersion: parts[0].lockfileVersion,
+        resolvedVersions,
+        recordedOverrides,
+        raw: parts[0].raw,
+    };
+}
+/**
+ * Paths of the lockfiles pnpm maintains for the project at `cwd`: the root
+ * `pnpm-lock.yaml`, or, with `sharedWorkspaceLockfile: false` (or
+ * `shared-workspace-lockfile=false` in .npmrc), every `pnpm-lock.yaml` below
+ * `cwd` outside node_modules. Only existing files are returned, sorted.
+ */
+async function findPnpmLockfiles(cwd) {
+    if (await lockfilesAreShared(cwd)) {
+        const root = external_node_path_default().join(cwd, 'pnpm-lock.yaml');
+        try {
+            await (0,promises_.access)(root);
+            return [root];
+        }
+        catch {
+            return [];
+        }
+    }
+    const found = [];
+    await collectLockfiles(cwd, found);
+    return found.sort();
+}
+async function lockfilesAreShared(cwd) {
+    const workspace = await readOptional(external_node_path_default().join(cwd, 'pnpm-workspace.yaml'));
+    if (workspace !== null) {
+        const parsed = (0,dist/* parse */.qg)(workspace);
+        if (parsed?.sharedWorkspaceLockfile === false)
+            return false;
+    }
+    const npmrc = await readOptional(external_node_path_default().join(cwd, '.npmrc'));
+    if (npmrc !== null) {
+        const value = (0,ini.parse)(npmrc)['shared-workspace-lockfile'];
+        if (value === false || value === 'false')
+            return false;
+    }
+    return true;
+}
+async function collectLockfiles(dir, found) {
+    const entries = await (0,promises_.readdir)(dir, { withFileTypes: true });
+    for (const entry of entries) {
+        if (entry.isDirectory()) {
+            if (entry.name === 'node_modules' || entry.name === '.git')
+                continue;
+            await collectLockfiles(external_node_path_default().join(dir, entry.name), found);
+        }
+        else if (entry.isFile() && entry.name === 'pnpm-lock.yaml') {
+            found.push(external_node_path_default().join(dir, entry.name));
+        }
+    }
+}
+async function readOptional(filePath) {
     try {
-        await (0,promises_.access)(filePath);
+        return await (0,promises_.readFile)(filePath, 'utf8');
     }
     catch {
         return null;
     }
+}
+async function parseLockfileFile(filePath) {
     const raw = await (0,promises_.readFile)(filePath, 'utf8');
     let parsed;
     try {
         parsed = (0,dist/* parse */.qg)(raw);
     }
     catch (err) {
-        throw new PrunerError(`Failed to parse pnpm-lock.yaml: ${err.message}`, err);
+        throw new PrunerError(`Failed to parse ${filePath}: ${err.message}`, err);
     }
     const lockfileVersion = String(parsed.lockfileVersion ?? '');
     const resolvedVersions = new Map();
@@ -59995,7 +60365,7 @@ async function loadPnpmLockfile(cwd) {
                 recordedOverrides[k] = v;
         }
     }
-    return { filePath, lockfileVersion, resolvedVersions, recordedOverrides, raw: parsed };
+    return { lockfileVersion, resolvedVersions, recordedOverrides, raw: parsed };
 }
 /**
  * Parse a pnpm-lock package id such as `fast-uri@3.1.2`, `@next/swc-linux-x64-gnu@16.2.6`,
@@ -60028,7 +60398,6 @@ function stripVersionSuffix(version) {
 // EXTERNAL MODULE: ./node_modules/.pnpm/@actions+exec@1.1.1/node_modules/@actions/exec/lib/exec.js
 var exec = __nccwpck_require__(8872);
 ;// CONCATENATED MODULE: ./src/pruners/overrides.ts
-
 
 
 
@@ -60086,16 +60455,13 @@ const overridesPruner = {
         const entries = readMapEntries(ctx.workspace.document, 'overrides');
         if (entries.length === 0)
             return { pruner: 'overrides', removed, skipped };
-        const lockfilePath = external_node_path_default().join(ctx.cwd, 'pnpm-lock.yaml');
-        const wsBackup = await (0,promises_.readFile)(ctx.workspace.filePath, 'utf8');
-        let lockBackup = null;
-        try {
-            lockBackup = await (0,promises_.readFile)(lockfilePath, 'utf8');
-        }
-        catch {
+        const lockfilePaths = await findPnpmLockfiles(ctx.cwd);
+        if (lockfilePaths.length === 0) {
             ctx.logger.warn('overrides pruner: pnpm-lock.yaml is missing — skipping (a lockfile is required to verify resolution).');
             return { pruner: 'overrides', removed, skipped };
         }
+        const wsBackup = await (0,promises_.readFile)(ctx.workspace.filePath, 'utf8');
+        const lockBackup = await readFiles(lockfilePaths);
         const baseline = await loadPnpmLockfile(ctx.cwd);
         const toRemoveKeys = [];
         let wsAccepted = wsBackup;
@@ -60114,7 +60480,7 @@ const overridesPruner = {
                     return { pruner: 'overrides', removed, skipped };
                 }
                 wsAccepted = wsPruned;
-                lockAccepted = await (0,promises_.readFile)(lockfilePath, 'utf8');
+                lockAccepted = await readFiles(lockfilePaths);
             }
             for (const { key, value: range } of entries) {
                 const decision = await evaluateOverride(ctx, key, range, removed, baseline);
@@ -60128,18 +60494,18 @@ const overridesPruner = {
                         file: ctx.workspace.filePath,
                     });
                     wsAccepted = await (0,promises_.readFile)(ctx.workspace.filePath, 'utf8');
-                    lockAccepted = await (0,promises_.readFile)(lockfilePath, 'utf8');
+                    lockAccepted = await readFiles(lockfilePaths);
                 }
                 else {
                     skipped.push({ key, reason: decision.reason });
                     await restore(ctx.workspace.filePath, wsAccepted);
-                    await (0,promises_.writeFile)(lockfilePath, lockAccepted, 'utf8');
+                    await writeFiles(lockAccepted);
                 }
             }
         }
         finally {
             await restore(ctx.workspace.filePath, wsBackup);
-            await (0,promises_.writeFile)(lockfilePath, lockBackup, 'utf8');
+            await writeFiles(lockBackup);
         }
         if (toRemoveKeys.length > 0) {
             removeFromMap(ctx.workspace.document, 'overrides', toRemoveKeys, overrideTargetName);
@@ -60268,12 +60634,17 @@ async function installLockfileOnly(ctx) {
         return { exitCode: -1, output: err.message };
     }
 }
+async function readFiles(paths) {
+    return new Map(await Promise.all(paths.map(async (p) => [p, await (0,promises_.readFile)(p, 'utf8')])));
+}
+async function writeFiles(contents) {
+    await Promise.all([...contents].map(([p, content]) => (0,promises_.writeFile)(p, content, 'utf8')));
+}
 async function restore(filePath, original) {
     await (0,promises_.writeFile)(filePath, original, 'utf8');
 }
 
 ;// CONCATENATED MODULE: ./src/lockfile/regenerate.ts
-
 
 
 /**
@@ -60283,17 +60654,14 @@ async function restore(filePath, original) {
  * `pnpm install --frozen-lockfile` because the `overrides` block recorded in
  * the lockfile no longer matches what the workspace file declares.
  *
- * Returns the absolute path of the (now-updated) lockfile, or null when there
- * is no lockfile to regenerate.
+ * Returns the absolute paths of the (now-updated) lockfiles, including
+ * per-project ones (see {@link findPnpmLockfiles}), or an empty array when
+ * there is no lockfile to regenerate.
  */
 async function regeneratePnpmLockfile(cwd, logger) {
-    const lockfilePath = external_node_path_default().join(cwd, 'pnpm-lock.yaml');
-    try {
-        await (0,promises_.access)(lockfilePath);
-    }
-    catch {
+    if ((await findPnpmLockfiles(cwd)).length === 0) {
         logger.info('No pnpm-lock.yaml found — skipping lockfile regeneration.');
-        return null;
+        return [];
     }
     const exitCode = await (0,exec.exec)('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'], {
         cwd,
@@ -60303,7 +60671,7 @@ async function regeneratePnpmLockfile(cwd, logger) {
         throw new Error(`pnpm install --lockfile-only failed with exit code ${exitCode}. ` +
             'The pruned files do not resolve, so no pull request was created.');
     }
-    return lockfilePath;
+    return findPnpmLockfiles(cwd);
 }
 
 ;// CONCATENATED MODULE: ./src/lockfile/verify.ts
@@ -60315,13 +60683,13 @@ async function regeneratePnpmLockfile(cwd, logger) {
  * Regenerate `pnpm-lock.yaml` for the pruned files on disk and re-check every
  * removed override against it. `baseline` is the lockfile from before any
  * pruning. Throws when the lockfile cannot be regenerated or a removed
- * override no longer holds; returns the lockfile path, or null when the
- * project has no lockfile.
+ * override no longer holds; returns the lockfile paths, or an empty array when
+ * the project has no lockfile.
  */
 async function regenerateAndVerify(cwd, reports, baseline, logger) {
     const regenerated = await regeneratePnpmLockfile(cwd, logger);
-    if (!regenerated)
-        return null;
+    if (regenerated.length === 0)
+        return regenerated;
     // The overrides pruner verified its removals before the other pruners'
     // edits were written, so re-check them against the lockfile actually
     // produced. The resulting PR is made with GITHUB_TOKEN and gets no CI.
@@ -60879,21 +61247,20 @@ async function run() {
         return;
     }
     if (packageManager === 'pnpm' && ctx.lockfile) {
-        const lockfilePath = ctx.lockfile.filePath;
         const verify = () => logger.group('Regenerate pnpm-lock.yaml', () => regenerateAndVerify(cwd, reports, ctx.lockfile, logger));
         if (inputs.dryRun) {
             // dry-run must leave the tree untouched, so the pruned files exist only
             // while the lockfile is regenerated and checked against them.
             const touched = [ctx.workspace?.filePath, ctx.packageJson?.filePath, ctx.npmrc?.filePath];
-            await withFilesRestored([lockfilePath, ...touched.filter((p) => p !== undefined)], async () => {
+            await withFilesRestored([...ctx.lockfile.filePaths, ...touched.filter((p) => p !== undefined)], async () => {
                 await persistChanges(ctx, reports, false, logger);
                 await verify();
             });
         }
         else {
-            const regenerated = await verify();
-            if (regenerated && !changedFiles.includes(regenerated)) {
-                changedFiles.push(regenerated);
+            for (const regenerated of await verify()) {
+                if (!changedFiles.includes(regenerated))
+                    changedFiles.push(regenerated);
             }
         }
     }
