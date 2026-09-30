@@ -96,7 +96,7 @@ export async function run(): Promise<void> {
     const finalLockfile = regenerated ? await loadPnpmLockfile(cwd) : null;
     if (finalLockfile) {
       const removedOverrides = reports.flatMap((r) => (r.pruner === 'overrides' ? r.removed : []));
-      const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides);
+      const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides, ctx.lockfile);
       if (regressions.length > 0) {
         throw new Error(
           `Regenerated pnpm-lock.yaml no longer satisfies removed overrides: ${regressions.join('; ')}`,

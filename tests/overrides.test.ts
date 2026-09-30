@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { overrideTargetName } from '../src/pruners/overrides.js';
+import { overrideTargetName, parseOverrideKey } from '../src/pruners/overrides.js';
 
 describe('overrideTargetName', () => {
   it('strips a version selector from an unscoped key', () => {
@@ -30,5 +30,19 @@ describe('overrideTargetName', () => {
     expect(overrideTargetName('brace-expansion@>=2.0.0 <2.1.4')).toBe('brace-expansion');
     expect(overrideTargetName('@scope/pkg@>1.0.0')).toBe('@scope/pkg');
     expect(overrideTargetName('foo@>=1 <2>bar@>=3.0.0 <3.1.0')).toBe('bar');
+  });
+});
+
+describe('parseOverrideKey', () => {
+  it('returns the selector of the target package', () => {
+    expect(parseOverrideKey('brace-expansion@>=2.0.0 <2.1.4')).toEqual({
+      name: 'brace-expansion',
+      selector: '>=2.0.0 <2.1.4',
+    });
+    expect(parseOverrideKey('foo@1>@scope/bar@<2.0.0')).toEqual({
+      name: '@scope/bar',
+      selector: '<2.0.0',
+    });
+    expect(parseOverrideKey('@scope/pkg')).toEqual({ name: '@scope/pkg' });
   });
 });

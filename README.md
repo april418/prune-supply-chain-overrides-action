@@ -20,7 +20,7 @@ remove, and opens a pull request for review.
 | --- | --- |
 | `minimumReleaseAgeExclude` (pnpm) | The most recently published version of the package that is resolved in `pnpm-lock.yaml` is at least `minimumReleaseAge` minutes old. |
 | `trustPolicyExclude` (pnpm) | The most recently published resolved version is at least `trustPolicyIgnoreAfter` minutes old. |
-| `overrides` (pnpm) | Removing the override and running `pnpm install --lockfile-only` produces a lockfile in which every resolved version of the override key still satisfies the original range. |
+| `overrides` (pnpm) | Removing the override and running `pnpm install --lockfile-only` produces a lockfile in which every resolved version of the target package still satisfies the override's range, apart from versions outside the override's selector that were already resolved before. |
 | `onlyBuiltDependencies` (pnpm) | The package is no longer in the dependency graph, or its currently-resolved version does not declare `preinstall` / `install` / `postinstall` scripts. |
 
 Entries that the action cannot verify (e.g. the registry has no publish time,
@@ -189,12 +189,21 @@ The pruner verifies this by:
    accepted for removal, and running
    `pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile`.
 3. Checking that every resolved version of the override's target package in
-   the new lockfile satisfies the original range — and that the same still
-   holds for every override accepted earlier.
+   the new lockfile that matches the override's selector (the part after `@`
+   in the key, e.g. `<0.2.6` in `tmp@<0.2.6`) satisfies the override's range —
+   and that the same still holds for every override accepted earlier.
+   A version outside the selector is ignored only if it was already resolved
+   before any override was removed, so one override per major series
+   (`foo@<1.2.0`, `foo@>=2.0.0 <2.3.0`) is not kept alive by the other
+   series. A version that newly appears outside the selector still has to
+   satisfy the range: pnpm applies an override when the *declared* range
+   intersects the selector, so removing `foo@<1.2.0` can let a dependency on
+   `foo@>=1.0.0` jump to a later major. A key without a selector, or with one
+   that is not a semver range, matches every version.
 4. Keeping that state when the entry is removable, or rolling back to the
    last accepted state otherwise.
 
-If `pnpm install` fails or any resolved version violates a range, the entry
+If `pnpm install` fails or any matching version violates a range, the entry
 is kept. Evaluating removals cumulatively matters when several overrides
 cover the same package (e.g. `tmp@<=0.2.3` and `tmp@<0.2.6`): each one looks
 redundant while the other is in place, but removing both is not safe.

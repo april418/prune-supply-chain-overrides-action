@@ -28,7 +28,9 @@ overrides:
   # high) など 5 件の脆弱性 (2026-07 末の新波)。< 8.5.0 の TLS 検証バイパス
   # (GHSA-vmh5-mc38-953g) 等もまとめてカバーする。@actions/core>
   # @actions/http-client>undici 経由で取り込まれ、ncc で dist にもバンドルされる。
-  undici: '>=8.9.0'
+  # < 8.10.2 にも WebSocket の DoS (GHSA-rfgv-xxqx-mfg5, high) や
+  # BalancedPool の TLS 検証バイパス (GHSA-w293-vg96-wgc3, high) など 10 件。
+  undici: '>=8.10.2'
 
 # peer dependency のミスマッチを警告ではなくエラーにする。
 strictPeerDependencies: true
