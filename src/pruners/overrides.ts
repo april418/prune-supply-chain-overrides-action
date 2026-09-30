@@ -107,7 +107,7 @@ export const overridesPruner: Pruner = {
     }
 
     if (toRemoveKeys.length > 0) {
-      removeFromMap(ctx.workspace.document, 'overrides', toRemoveKeys);
+      removeFromMap(ctx.workspace.document, 'overrides', toRemoveKeys, overrideTargetName);
       if (isCollectionEmpty(ctx.workspace.document, 'overrides')) {
         removeKey(ctx.workspace.document, 'overrides');
       }
