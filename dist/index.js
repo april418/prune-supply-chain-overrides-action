@@ -60080,7 +60080,110 @@ function readNumberKey(doc, key) {
 }
 const _internal = { SCALAR_KEYS };
 
+;// CONCATENATED MODULE: ./src/files/json-text.ts
+
+/**
+ * Remove `keys` from the top-level `overrides` object of a JSON document by
+ * cutting their text out, so everything else (line endings, inline arrays,
+ * key order) stays byte for byte. `overrides` itself is removed when it
+ * becomes empty. Keys that are not present are ignored.
+ */
+function removeOverrideKeys(text, keys) {
+    for (const key of keys) {
+        const root = scanObject(text, text.indexOf('{'));
+        const rootIndex = root.findIndex((m) => m.key === 'overrides');
+        const overrides = root[rootIndex];
+        if (!overrides || text[overrides.valueStart] !== '{')
+            continue;
+        const members = scanObject(text, overrides.valueStart);
+        const index = members.findIndex((m) => m.key === key);
+        if (index === -1)
+            continue;
+        text =
+            members.length === 1
+                ? removeMember(text, root, rootIndex)
+                : removeMember(text, members, index);
+    }
+    return text;
+}
+/**
+ * Cut member `index` out together with the separator that belongs to it: the
+ * text up to the next key when one follows, else the comma after the previous
+ * value.
+ */
+function removeMember(text, members, index) {
+    const member = members[index];
+    const next = members[index + 1];
+    if (next)
+        return text.slice(0, member.start) + text.slice(next.start);
+    const previous = members[index - 1];
+    if (previous)
+        return text.slice(0, previous.end) + text.slice(member.end);
+    return text.slice(0, member.start) + text.slice(member.end);
+}
+function scanObject(text, open) {
+    if (open < 0 || text[open] !== '{')
+        throw new PrunerError('Expected a JSON object');
+    const members = [];
+    let i = skipWhitespace(text, open + 1);
+    while (text[i] !== '}') {
+        if (text[i] !== '"')
+            throw new PrunerError(`Unexpected character in JSON at ${i}`);
+        const keyEnd = skipString(text, i);
+        const key = JSON.parse(text.slice(i, keyEnd));
+        let j = skipWhitespace(text, keyEnd);
+        if (text[j] !== ':')
+            throw new PrunerError(`Expected ":" in JSON at ${j}`);
+        j = skipWhitespace(text, j + 1);
+        const end = skipValue(text, j);
+        members.push({ key, start: i, valueStart: j, end });
+        i = skipWhitespace(text, end);
+        if (text[i] === ',')
+            i = skipWhitespace(text, i + 1);
+    }
+    return members;
+}
+function skipWhitespace(text, i) {
+    while (i < text.length && /\s/.test(text[i]))
+        i += 1;
+    return i;
+}
+function skipString(text, i) {
+    let j = i + 1;
+    while (j < text.length && text[j] !== '"')
+        j += text[j] === '\\' ? 2 : 1;
+    return j + 1;
+}
+function skipValue(text, i) {
+    if (text[i] === '"')
+        return skipString(text, i);
+    if (text[i] === '{' || text[i] === '[') {
+        let depth = 0;
+        let j = i;
+        while (j < text.length) {
+            const c = text[j];
+            if (c === '"') {
+                j = skipString(text, j);
+                continue;
+            }
+            if (c === '{' || c === '[')
+                depth += 1;
+            if (c === '}' || c === ']')
+                depth -= 1;
+            j += 1;
+            if (depth === 0)
+                return j;
+        }
+        throw new PrunerError('Unterminated JSON value');
+    }
+    let j = i;
+    while (j < text.length && !/[\s,}\]]/.test(text[j]))
+        j += 1;
+    return j;
+}
+
 ;// CONCATENATED MODULE: ./src/files/package-json.ts
+
 
 
 
@@ -60104,14 +60207,16 @@ async function loadPackageJson(cwd) {
         filePath,
         raw,
         json,
-        indent: detectIndent(raw),
-        trailingNewline: raw.endsWith('\n'),
+        text: raw,
     };
 }
+/** Remove `keys` from `overrides`, cutting them out of `text` so its formatting stays. */
+function removeOverrides(data, keys) {
+    removeFromObjectField(data.json, 'overrides', keys);
+    data.text = removeOverrideKeys(data.text, keys);
+}
 async function savePackageJson(data) {
-    let next = JSON.stringify(data.json, null, data.indent);
-    if (data.trailingNewline)
-        next += '\n';
+    const next = data.text;
     if (next === data.raw)
         return;
     await (0,promises_.writeFile)(data.filePath, next, 'utf8');
@@ -60134,14 +60239,6 @@ function removeFromObjectField(json, field, keysToRemove) {
     if (Object.keys(obj).length === 0)
         delete json[field];
     return removed;
-}
-function detectIndent(raw) {
-    for (const line of raw.split('\n')) {
-        const match = /^([ \t]+)\S/.exec(line);
-        if (match)
-            return match[1];
-    }
-    return '  ';
 }
 
 ;// CONCATENATED MODULE: ./src/files/npmrc.ts
@@ -60395,9 +60492,102 @@ function stripVersionSuffix(version) {
     return version.trim();
 }
 
+;// CONCATENATED MODULE: ./src/lockfile/npm-lockfile.ts
+
+
+
+/**
+ * The lockfile npm maintains for the project at `cwd`: `npm-shrinkwrap.json`
+ * takes precedence over `package-lock.json`, as in npm. Null when neither exists.
+ */
+async function findNpmLockfile(cwd) {
+    for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
+        const filePath = external_node_path_default().join(cwd, name);
+        try {
+            await (0,promises_.access)(filePath);
+            return filePath;
+        }
+        catch {
+            // try the next name
+        }
+    }
+    return null;
+}
+/**
+ * Load the npm lockfile (see {@link findNpmLockfile}) into the same shape as
+ * {@link loadPnpmLockfile}. Returns null when there is none, and throws for
+ * lockfileVersion 1, which has no `packages` map. Only installed packages
+ * (`node_modules/...` entries) count; workspace projects and links are not
+ * resolved versions.
+ */
+async function loadNpmLockfile(cwd) {
+    const filePath = await findNpmLockfile(cwd);
+    if (!filePath)
+        return null;
+    let parsed;
+    try {
+        parsed = JSON.parse(await (0,promises_.readFile)(filePath, 'utf8'));
+    }
+    catch (err) {
+        throw new PrunerError(`Failed to parse ${filePath}: ${err.message}`, err);
+    }
+    if (Number(parsed.lockfileVersion) < 2) {
+        throw new PrunerError(`${filePath} is lockfileVersion ${String(parsed.lockfileVersion)}; regenerate it with npm 7 or later.`);
+    }
+    const resolvedVersions = new Map();
+    const packages = (parsed.packages ?? {});
+    for (const [location, entry] of Object.entries(packages)) {
+        const at = location.lastIndexOf('node_modules/');
+        if (at === -1 || entry.link || typeof entry.version !== 'string')
+            continue;
+        const name = location.slice(at + 'node_modules/'.length);
+        const bucket = resolvedVersions.get(name) ?? new Set();
+        bucket.add(entry.version);
+        resolvedVersions.set(name, bucket);
+    }
+    return {
+        filePath,
+        filePaths: [filePath],
+        lockfileVersion: String(parsed.lockfileVersion ?? ''),
+        resolvedVersions,
+        recordedOverrides: {},
+        raw: parsed,
+    };
+}
+
+;// CONCATENATED MODULE: ./src/lockfile/manager.ts
+
+
+const pnpm = {
+    name: 'pnpm-lock.yaml',
+    find: findPnpmLockfiles,
+    load: loadPnpmLockfile,
+    resolveCommand: {
+        command: 'pnpm',
+        args: ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'],
+    },
+};
+const npm = {
+    name: 'package-lock.json',
+    async find(cwd) {
+        const filePath = await findNpmLockfile(cwd);
+        return filePath ? [filePath] : [];
+    },
+    load: loadNpmLockfile,
+    resolveCommand: {
+        command: 'npm',
+        args: ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'],
+    },
+};
+function lockfileManager(packageManager) {
+    return packageManager === 'npm' ? npm : pnpm;
+}
+
 // EXTERNAL MODULE: ./node_modules/.pnpm/@actions+exec@1.1.1/node_modules/@actions/exec/lib/exec.js
 var exec = __nccwpck_require__(8872);
 ;// CONCATENATED MODULE: ./src/pruners/overrides.ts
+
+
 
 
 
@@ -60446,44 +60636,47 @@ const overridesPruner = {
     async run(ctx) {
         const removed = [];
         const skipped = [];
-        if (!ctx.workspace)
+        const source = ctx.packageManager === 'npm' ? npmSource(ctx) : pnpmSource(ctx);
+        if (!source)
             return { pruner: 'overrides', removed, skipped };
-        if (ctx.packageManager !== 'pnpm') {
-            ctx.logger.info('overrides pruner: only pnpm projects are supported in this release');
-            return { pruner: 'overrides', removed, skipped };
-        }
-        const entries = readMapEntries(ctx.workspace.document, 'overrides');
+        skipped.push(...source.unsupported);
+        const { entries } = source;
         if (entries.length === 0)
             return { pruner: 'overrides', removed, skipped };
-        const lockfilePaths = await findPnpmLockfiles(ctx.cwd);
+        const manager = lockfileManager(ctx.packageManager);
+        const lockfilePaths = await manager.find(ctx.cwd);
         if (lockfilePaths.length === 0) {
-            ctx.logger.warn('overrides pruner: pnpm-lock.yaml is missing — skipping (a lockfile is required to verify resolution).');
+            ctx.logger.warn(`overrides pruner: ${manager.name} is missing — skipping (a lockfile is required to verify resolution).`);
             return { pruner: 'overrides', removed, skipped };
         }
-        const wsBackup = await (0,promises_.readFile)(ctx.workspace.filePath, 'utf8');
+        const fileBackup = await (0,promises_.readFile)(source.filePath, 'utf8');
         const lockBackup = await readFiles(lockfilePaths);
-        const baseline = await loadPnpmLockfile(ctx.cwd);
+        const baseline = await manager.load(ctx.cwd);
         const toRemoveKeys = [];
-        let wsAccepted = wsBackup;
+        let fileAccepted = fileBackup;
         let lockAccepted = lockBackup;
         try {
             // Other pruners edit only the in-memory document, so start from it: an
             // override may be needed only because an exclude above is being removed.
-            const wsPruned = ctx.workspace.document.toString({ lineWidth: 0 });
-            if (wsPruned !== wsBackup) {
-                await (0,promises_.writeFile)(ctx.workspace.filePath, wsPruned, 'utf8');
-                const install = await installLockfileOnly(ctx);
-                if (install.exitCode !== 0) {
-                    const reason = `the other pruners' changes do not resolve, so no override was evaluated: ${install.output}`;
-                    for (const { key } of entries)
-                        skipped.push({ key, reason });
-                    return { pruner: 'overrides', removed, skipped };
-                }
-                wsAccepted = wsPruned;
-                lockAccepted = await readFiles(lockfilePaths);
+            // Resolving it once before removing anything also tells a starting state
+            // that never resolves (e.g. npm's EOVERRIDE) apart from a failed removal.
+            const pruned = source.serialize();
+            if (pruned !== fileBackup)
+                await (0,promises_.writeFile)(source.filePath, pruned, 'utf8');
+            const install = await resolveLockfile(ctx);
+            if (install.exitCode !== 0) {
+                const cause = pruned === fileBackup
+                    ? 'the lockfile does not resolve even with every override in place'
+                    : "the other pruners' changes do not resolve";
+                const reason = `${cause}, so no override was evaluated: ${install.output}`;
+                for (const { key } of entries)
+                    skipped.push({ key, reason });
+                return { pruner: 'overrides', removed, skipped };
             }
+            fileAccepted = pruned;
+            lockAccepted = await readFiles(lockfilePaths);
             for (const { key, value: range } of entries) {
-                const decision = await evaluateOverride(ctx, key, range, removed, baseline);
+                const decision = await evaluateOverride(ctx, source, key, range, removed, baseline);
                 if (decision.action === 'remove') {
                     toRemoveKeys.push(key);
                     removed.push({
@@ -60491,52 +60684,99 @@ const overridesPruner = {
                         key,
                         value: range,
                         reason: decision.reason,
-                        file: ctx.workspace.filePath,
+                        file: source.filePath,
                     });
-                    wsAccepted = await (0,promises_.readFile)(ctx.workspace.filePath, 'utf8');
+                    fileAccepted = await (0,promises_.readFile)(source.filePath, 'utf8');
                     lockAccepted = await readFiles(lockfilePaths);
                 }
                 else {
                     skipped.push({ key, reason: decision.reason });
-                    await restore(ctx.workspace.filePath, wsAccepted);
+                    await restore(source.filePath, fileAccepted);
                     await writeFiles(lockAccepted);
                 }
             }
         }
         finally {
-            await restore(ctx.workspace.filePath, wsBackup);
+            await restore(source.filePath, fileBackup);
             await writeFiles(lockBackup);
         }
-        if (toRemoveKeys.length > 0) {
-            removeFromMap(ctx.workspace.document, 'overrides', toRemoveKeys, overrideTargetName);
-            if (isCollectionEmpty(ctx.workspace.document, 'overrides')) {
-                removeKey(ctx.workspace.document, 'overrides');
-            }
-        }
+        if (toRemoveKeys.length > 0)
+            source.remove(toRemoveKeys);
         return { pruner: 'overrides', removed, skipped };
     },
 };
-async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved, baseline) {
-    if (!ctx.workspace)
-        return { action: 'skip', reason: 'no pnpm-workspace.yaml' };
-    const wsSource = await (0,promises_.readFile)(ctx.workspace.filePath, 'utf8');
-    const doc = (0,dist/* parseDocument */.Tp)(wsSource);
-    const overrides = doc.get('overrides', true);
-    if (!(0,dist/* isMap */.jh)(overrides)) {
-        return { action: 'skip', reason: 'overrides block missing or malformed' };
+function pnpmSource(ctx) {
+    const workspace = ctx.workspace;
+    if (!workspace)
+        return null;
+    return {
+        filePath: workspace.filePath,
+        entries: readMapEntries(workspace.document, 'overrides'),
+        unsupported: [],
+        serialize: () => workspace.document.toString({ lineWidth: 0 }),
+        without(text, key) {
+            const doc = (0,dist/* parseDocument */.Tp)(text);
+            const overrides = doc.get('overrides', true);
+            if ((0,dist/* isMap */.jh)(overrides)) {
+                overrides.delete(key);
+                if (overrides.items.length === 0)
+                    doc.delete('overrides');
+            }
+            return doc.toString({ lineWidth: 0 });
+        },
+        remove(keys) {
+            removeFromMap(workspace.document, 'overrides', keys, overrideTargetName);
+            if (isCollectionEmpty(workspace.document, 'overrides')) {
+                removeKey(workspace.document, 'overrides');
+            }
+        },
+    };
+}
+/**
+ * npm's `package.json#overrides`. Only top-level string values are evaluated:
+ * a nested object scopes overrides to a parent package and a `$name` value
+ * refers to a direct dependency, and neither maps onto a single version range.
+ */
+function npmSource(ctx) {
+    const pkg = ctx.packageJson;
+    if (!pkg)
+        return null;
+    const overrides = pkg.json.overrides;
+    const entries = [];
+    const unsupported = [];
+    if (overrides && typeof overrides === 'object' && !Array.isArray(overrides)) {
+        for (const [key, value] of Object.entries(overrides)) {
+            if (typeof value !== 'string') {
+                unsupported.push({ key, reason: 'nested npm overrides are not evaluated' });
+            }
+            else if (value.startsWith('$')) {
+                unsupported.push({ key, reason: `"${value}" refers to a dependency and is not evaluated` });
+            }
+            else {
+                entries.push({ key, value });
+            }
+        }
     }
-    overrides.delete(overrideKey);
-    if (overrides.items.length === 0)
-        doc.delete('overrides');
-    await (0,promises_.writeFile)(ctx.workspace.filePath, doc.toString({ lineWidth: 0 }), 'utf8');
-    const install = await installLockfileOnly(ctx);
+    return {
+        filePath: pkg.filePath,
+        entries,
+        unsupported,
+        serialize: () => pkg.text,
+        without: (text, key) => removeOverrideKeys(text, [key]),
+        remove: (keys) => removeOverrides(pkg, keys),
+    };
+}
+async function evaluateOverride(ctx, source, overrideKey, range, alreadyRemoved, baseline) {
+    const text = await (0,promises_.readFile)(source.filePath, 'utf8');
+    await (0,promises_.writeFile)(source.filePath, source.without(text, overrideKey), 'utf8');
+    const install = await resolveLockfile(ctx);
     if (install.exitCode !== 0) {
         return {
             action: 'skip',
-            reason: `pnpm install failed while simulating removal: ${install.output}`,
+            reason: `lockfile resolution failed while simulating removal: ${install.output}`,
         };
     }
-    const newLockfile = await loadPnpmLockfile(ctx.cwd);
+    const newLockfile = await lockfileManager(ctx.packageManager).load(ctx.cwd);
     if (!newLockfile) {
         return { action: 'skip', reason: 'lockfile disappeared after simulation' };
     }
@@ -60615,11 +60855,12 @@ function violating(versions, key, range, baselineVersions) {
         !semver_default().satisfies(v, range) &&
         (semver_default().satisfies(v, scope, { includePrerelease: true }) || !baselineVersions?.has(v)));
 }
-/** Run `pnpm install --lockfile-only`; `output` is the tail of its output or the error. */
-async function installLockfileOnly(ctx) {
+/** Re-resolve the lockfiles; `output` is the tail of the command's output or the error. */
+async function resolveLockfile(ctx) {
+    const { command, args } = lockfileManager(ctx.packageManager).resolveCommand;
     const output = [];
     try {
-        const exitCode = await (0,exec.exec)('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'], {
+        const exitCode = await (0,exec.exec)(command, args, {
             cwd: ctx.cwd,
             ignoreReturnCode: true,
             silent: true,
@@ -60648,30 +60889,29 @@ async function restore(filePath, original) {
 
 
 /**
- * Re-run `pnpm install --lockfile-only` so that `pnpm-lock.yaml` reflects the
- * post-prune state of `pnpm-workspace.yaml`. Without this, consumers of the
- * resulting PR hit `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` on
- * `pnpm install --frozen-lockfile` because the `overrides` block recorded in
- * the lockfile no longer matches what the workspace file declares.
+ * Re-resolve the lockfiles so that they reflect the post-prune state of
+ * `pnpm-workspace.yaml` / `package.json`. Without this, consumers of the
+ * resulting PR hit `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` (or npm's equivalent
+ * `npm ci` failure) because the overrides recorded in the lockfile no longer
+ * match the manifest.
  *
  * Returns the absolute paths of the (now-updated) lockfiles, including
  * per-project ones (see {@link findPnpmLockfiles}), or an empty array when
  * there is no lockfile to regenerate.
  */
-async function regeneratePnpmLockfile(cwd, logger) {
-    if ((await findPnpmLockfiles(cwd)).length === 0) {
-        logger.info('No pnpm-lock.yaml found — skipping lockfile regeneration.');
+async function regenerateLockfile(cwd, packageManager, logger) {
+    const manager = lockfileManager(packageManager);
+    if ((await manager.find(cwd)).length === 0) {
+        logger.info(`No ${manager.name} found — skipping lockfile regeneration.`);
         return [];
     }
-    const exitCode = await (0,exec.exec)('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'], {
-        cwd,
-        ignoreReturnCode: true,
-    });
+    const { command, args } = manager.resolveCommand;
+    const exitCode = await (0,exec.exec)(command, args, { cwd, ignoreReturnCode: true });
     if (exitCode !== 0) {
-        throw new Error(`pnpm install --lockfile-only failed with exit code ${exitCode}. ` +
+        throw new Error(`${command} ${args.slice(0, 2).join(' ')} failed with exit code ${exitCode}. ` +
             'The pruned files do not resolve, so no pull request was created.');
     }
-    return findPnpmLockfiles(cwd);
+    return manager.find(cwd);
 }
 
 ;// CONCATENATED MODULE: ./src/lockfile/verify.ts
@@ -60680,25 +60920,25 @@ async function regeneratePnpmLockfile(cwd, logger) {
 
 
 /**
- * Regenerate `pnpm-lock.yaml` for the pruned files on disk and re-check every
+ * Regenerate the lockfiles for the pruned files on disk and re-check every
  * removed override against it. `baseline` is the lockfile from before any
  * pruning. Throws when the lockfile cannot be regenerated or a removed
  * override no longer holds; returns the lockfile paths, or an empty array when
  * the project has no lockfile.
  */
-async function regenerateAndVerify(cwd, reports, baseline, logger) {
-    const regenerated = await regeneratePnpmLockfile(cwd, logger);
+async function regenerateAndVerify(cwd, packageManager, reports, baseline, logger) {
+    const regenerated = await regenerateLockfile(cwd, packageManager, logger);
     if (regenerated.length === 0)
         return regenerated;
     // The overrides pruner verified its removals before the other pruners'
     // edits were written, so re-check them against the lockfile actually
     // produced. The resulting PR is made with GITHUB_TOKEN and gets no CI.
-    const finalLockfile = await loadPnpmLockfile(cwd);
+    const finalLockfile = await lockfileManager(packageManager).load(cwd);
     if (finalLockfile) {
         const removedOverrides = reports.flatMap((r) => (r.pruner === 'overrides' ? r.removed : []));
         const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides, baseline);
         if (regressions.length > 0) {
-            throw new Error(`Regenerated pnpm-lock.yaml no longer satisfies removed overrides: ${regressions.join('; ')}`);
+            throw new Error(`Regenerated lockfile no longer satisfies removed overrides: ${regressions.join('; ')}`);
         }
     }
     return regenerated;
@@ -61199,13 +61439,13 @@ async function run() {
     const workspace = await loadPnpmWorkspace(cwd);
     const packageJson = await loadPackageJson(cwd);
     const npmrc = await loadNpmrc(cwd);
-    const lockfile = packageManager === 'pnpm' ? await loadPnpmLockfile(cwd) : null;
+    const lockfile = await lockfileManager(packageManager).load(cwd);
     if (!workspace && !packageJson) {
         core.setFailed(`No pnpm-workspace.yaml or package.json found in ${cwd}`);
         return;
     }
-    if (packageManager === 'pnpm' && !lockfile) {
-        logger.warn('pnpm-lock.yaml is missing — release-age and onlyBuiltDependencies pruners will be conservative.');
+    if (!lockfile) {
+        logger.warn(`${lockfileManager(packageManager).name} is missing — the overrides pruner is skipped and the release-age and onlyBuiltDependencies pruners will be conservative.`);
     }
     const ctx = {
         cwd,
@@ -61246,8 +61486,8 @@ async function run() {
         logger.info('No stale entries found. Nothing to commit.');
         return;
     }
-    if (packageManager === 'pnpm' && ctx.lockfile) {
-        const verify = () => logger.group('Regenerate pnpm-lock.yaml', () => regenerateAndVerify(cwd, reports, ctx.lockfile, logger));
+    if (ctx.lockfile) {
+        const verify = () => logger.group('Regenerate lockfile', () => regenerateAndVerify(cwd, packageManager, reports, ctx.lockfile, logger));
         if (inputs.dryRun) {
             // dry-run must leave the tree untouched, so the pruned files exist only
             // while the lockfile is regenerated and checked against them.

@@ -6,6 +6,7 @@ import { parse as parseYaml } from 'yaml';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { consoleLogger } from '../src/util/logger.js';
 import { loadPnpmWorkspace, removeFromSequence } from '../src/files/pnpm-workspace.js';
+import { loadPackageJson } from '../src/files/package-json.js';
 import type { PrunerContext } from '../src/pruners/types.js';
 
 const execMock = vi.hoisted(() => vi.fn());
@@ -280,6 +281,74 @@ overrides:
 
     expect(report.removed.map((e) => e.key)).toEqual(['tmp@<=0.2.3']);
     expect(await readFile(projectLock, 'utf8')).toBe(original);
+  });
+});
+
+describe('overridesPruner for npm', () => {
+  /** Stand-in for `npm install --package-lock-only`, using the same graph as pnpm. */
+  async function fakeNpmInstall(cwd: string): Promise<number> {
+    const pkg = JSON.parse(await readFile(path.join(cwd, 'package.json'), 'utf8')) as {
+      overrides?: Record<string, string>;
+    };
+    const packages: Record<string, object> = { '': { name: 'root', version: '1.0.0' } };
+    for (const [name, versions] of resolve(pkg.overrides ?? {})) {
+      [...versions].forEach((version, i) => {
+        const location =
+          i === 0 ? `node_modules/${name}` : `node_modules/dep${i}/node_modules/${name}`;
+        packages[location] = { version };
+      });
+    }
+    const lock = JSON.stringify({ lockfileVersion: 3, packages });
+    await writeFile(path.join(cwd, 'package-lock.json'), lock, 'utf8');
+    return 0;
+  }
+
+  async function setupNpm(overrides: Record<string, unknown>): Promise<PrunerContext> {
+    const cwd = await mkdtemp(path.join(tmpdir(), 'overrides-pruner-npm-test-'));
+    const json = { name: 'root', version: '1.0.0', overrides };
+    await writeFile(path.join(cwd, 'package.json'), `${JSON.stringify(json, null, 2)}\n`, 'utf8');
+    await fakeNpmInstall(cwd);
+    return {
+      cwd,
+      packageManager: 'npm',
+      registry: {} as PrunerContext['registry'],
+      workspace: null,
+      packageJson: await loadPackageJson(cwd),
+      npmrc: null,
+      lockfile: null,
+      now: new Date(),
+      logger: consoleLogger,
+    };
+  }
+
+  beforeEach(() => {
+    graph = DEFAULT_GRAPH;
+    execMock.mockReset();
+    execMock.mockImplementation((_cmd: string, _args: string[], opts: { cwd: string }) =>
+      fakeNpmInstall(opts.cwd),
+    );
+  });
+
+  it('keeps the overrides that hold back a vulnerable version and drops redundant ones', async () => {
+    const ctx = await setupNpm({ 'tmp@<=0.2.3': '>=0.2.4', 'tmp@<0.2.6': '>=0.2.6' });
+    const original = await readFile(path.join(ctx.cwd, 'package.json'), 'utf8');
+
+    const report = await overridesPruner.run(ctx);
+
+    expect(execMock.mock.calls[0]![0]).toBe('npm');
+    expect(report.removed.map((e) => e.key)).toEqual(['tmp@<=0.2.3']);
+    expect(ctx.packageJson!.json.overrides).toEqual({ 'tmp@<0.2.6': '>=0.2.6' });
+    expect(await readFile(path.join(ctx.cwd, 'package.json'), 'utf8')).toBe(original);
+  });
+
+  it('keeps nested and $-referencing overrides without evaluating them', async () => {
+    const ctx = await setupNpm({ tmp: '$tmp', foo: { bar: '1.0.0' } });
+
+    const report = await overridesPruner.run(ctx);
+
+    expect(report.removed).toEqual([]);
+    expect(report.skipped.map((e) => e.key)).toEqual(['tmp', 'foo']);
+    expect(execMock).not.toHaveBeenCalled();
   });
 });
 

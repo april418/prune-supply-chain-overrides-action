@@ -6,7 +6,7 @@ import { NpmRegistry, assertRegistryReachable } from './registry/npm-registry.js
 import { loadPnpmWorkspace, savePnpmWorkspace } from './files/pnpm-workspace.js';
 import { loadPackageJson, savePackageJson } from './files/package-json.js';
 import { loadNpmrc, saveNpmrc } from './files/npmrc.js';
-import { loadPnpmLockfile } from './lockfile/pnpm-lockfile.js';
+import { lockfileManager } from './lockfile/manager.js';
 import { regenerateAndVerify, withFilesRestored } from './lockfile/verify.js';
 import { minimumReleaseAgeExcludePruner, trustPolicyExcludePruner } from './pruners/age-based.js';
 import { overridesPruner } from './pruners/overrides.js';
@@ -36,15 +36,15 @@ export async function run(): Promise<void> {
   const workspace = await loadPnpmWorkspace(cwd);
   const packageJson = await loadPackageJson(cwd);
   const npmrc = await loadNpmrc(cwd);
-  const lockfile = packageManager === 'pnpm' ? await loadPnpmLockfile(cwd) : null;
+  const lockfile = await lockfileManager(packageManager).load(cwd);
 
   if (!workspace && !packageJson) {
     core.setFailed(`No pnpm-workspace.yaml or package.json found in ${cwd}`);
     return;
   }
-  if (packageManager === 'pnpm' && !lockfile) {
+  if (!lockfile) {
     logger.warn(
-      'pnpm-lock.yaml is missing — release-age and onlyBuiltDependencies pruners will be conservative.',
+      `${lockfileManager(packageManager).name} is missing — the overrides pruner is skipped and the release-age and onlyBuiltDependencies pruners will be conservative.`,
     );
   }
 
@@ -90,10 +90,10 @@ export async function run(): Promise<void> {
     return;
   }
 
-  if (packageManager === 'pnpm' && ctx.lockfile) {
+  if (ctx.lockfile) {
     const verify = () =>
-      logger.group('Regenerate pnpm-lock.yaml', () =>
-        regenerateAndVerify(cwd, reports, ctx.lockfile, logger),
+      logger.group('Regenerate lockfile', () =>
+        regenerateAndVerify(cwd, packageManager, reports, ctx.lockfile, logger),
       );
     if (inputs.dryRun) {
       // dry-run must leave the tree untouched, so the pruned files exist only

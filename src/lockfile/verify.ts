@@ -1,12 +1,13 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import type { Logger } from '../util/logger.js';
-import type { PrunerReport } from '../types.js';
+import type { PackageManager, PrunerReport } from '../types.js';
 import { findUnsatisfiedOverrides } from '../pruners/overrides.js';
-import { loadPnpmLockfile, type PnpmLockfile } from './pnpm-lockfile.js';
-import { regeneratePnpmLockfile } from './regenerate.js';
+import type { PnpmLockfile } from './pnpm-lockfile.js';
+import { lockfileManager } from './manager.js';
+import { regenerateLockfile } from './regenerate.js';
 
 /**
- * Regenerate `pnpm-lock.yaml` for the pruned files on disk and re-check every
+ * Regenerate the lockfiles for the pruned files on disk and re-check every
  * removed override against it. `baseline` is the lockfile from before any
  * pruning. Throws when the lockfile cannot be regenerated or a removed
  * override no longer holds; returns the lockfile paths, or an empty array when
@@ -14,22 +15,23 @@ import { regeneratePnpmLockfile } from './regenerate.js';
  */
 export async function regenerateAndVerify(
   cwd: string,
+  packageManager: PackageManager,
   reports: readonly PrunerReport[],
   baseline: PnpmLockfile | null,
   logger: Logger,
 ): Promise<string[]> {
-  const regenerated = await regeneratePnpmLockfile(cwd, logger);
+  const regenerated = await regenerateLockfile(cwd, packageManager, logger);
   if (regenerated.length === 0) return regenerated;
   // The overrides pruner verified its removals before the other pruners'
   // edits were written, so re-check them against the lockfile actually
   // produced. The resulting PR is made with GITHUB_TOKEN and gets no CI.
-  const finalLockfile = await loadPnpmLockfile(cwd);
+  const finalLockfile = await lockfileManager(packageManager).load(cwd);
   if (finalLockfile) {
     const removedOverrides = reports.flatMap((r) => (r.pruner === 'overrides' ? r.removed : []));
     const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides, baseline);
     if (regressions.length > 0) {
       throw new Error(
-        `Regenerated pnpm-lock.yaml no longer satisfies removed overrides: ${regressions.join('; ')}`,
+        `Regenerated lockfile no longer satisfies removed overrides: ${regressions.join('; ')}`,
       );
     }
   }

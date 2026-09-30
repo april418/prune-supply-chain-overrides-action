@@ -10,11 +10,10 @@ import {
   isCollectionEmpty,
   removeKey,
 } from '../files/pnpm-workspace.js';
-import {
-  findPnpmLockfiles,
-  loadPnpmLockfile,
-  type PnpmLockfile,
-} from '../lockfile/pnpm-lockfile.js';
+import type { PnpmLockfile } from '../lockfile/pnpm-lockfile.js';
+import { lockfileManager } from '../lockfile/manager.js';
+import { removeOverrides } from '../files/package-json.js';
+import { removeOverrideKeys } from '../files/json-text.js';
 
 // pnpm's own parent>child delimiter (parse-overrides). A `>` preceded by a
 // space, `|` or `@` belongs to a range selector such as `foo@>=1.0.0 <2`.
@@ -61,46 +60,48 @@ export const overridesPruner: Pruner = {
   async run(ctx: PrunerContext): Promise<PrunerReport> {
     const removed: PrunedEntry[] = [];
     const skipped: Array<{ key: string; reason: string }> = [];
-    if (!ctx.workspace) return { pruner: 'overrides', removed, skipped };
-    if (ctx.packageManager !== 'pnpm') {
-      ctx.logger.info('overrides pruner: only pnpm projects are supported in this release');
-      return { pruner: 'overrides', removed, skipped };
-    }
-
-    const entries = readMapEntries(ctx.workspace.document, 'overrides');
+    const source = ctx.packageManager === 'npm' ? npmSource(ctx) : pnpmSource(ctx);
+    if (!source) return { pruner: 'overrides', removed, skipped };
+    skipped.push(...source.unsupported);
+    const { entries } = source;
     if (entries.length === 0) return { pruner: 'overrides', removed, skipped };
 
-    const lockfilePaths = await findPnpmLockfiles(ctx.cwd);
+    const manager = lockfileManager(ctx.packageManager);
+    const lockfilePaths = await manager.find(ctx.cwd);
     if (lockfilePaths.length === 0) {
       ctx.logger.warn(
-        'overrides pruner: pnpm-lock.yaml is missing — skipping (a lockfile is required to verify resolution).',
+        `overrides pruner: ${manager.name} is missing — skipping (a lockfile is required to verify resolution).`,
       );
       return { pruner: 'overrides', removed, skipped };
     }
-    const wsBackup = await readFile(ctx.workspace.filePath, 'utf8');
+    const fileBackup = await readFile(source.filePath, 'utf8');
     const lockBackup = await readFiles(lockfilePaths);
-    const baseline = await loadPnpmLockfile(ctx.cwd);
+    const baseline = await manager.load(ctx.cwd);
 
     const toRemoveKeys: string[] = [];
-    let wsAccepted = wsBackup;
+    let fileAccepted = fileBackup;
     let lockAccepted = lockBackup;
     try {
       // Other pruners edit only the in-memory document, so start from it: an
       // override may be needed only because an exclude above is being removed.
-      const wsPruned = ctx.workspace.document.toString({ lineWidth: 0 });
-      if (wsPruned !== wsBackup) {
-        await writeFile(ctx.workspace.filePath, wsPruned, 'utf8');
-        const install = await installLockfileOnly(ctx);
-        if (install.exitCode !== 0) {
-          const reason = `the other pruners' changes do not resolve, so no override was evaluated: ${install.output}`;
-          for (const { key } of entries) skipped.push({ key, reason });
-          return { pruner: 'overrides', removed, skipped };
-        }
-        wsAccepted = wsPruned;
-        lockAccepted = await readFiles(lockfilePaths);
+      // Resolving it once before removing anything also tells a starting state
+      // that never resolves (e.g. npm's EOVERRIDE) apart from a failed removal.
+      const pruned = source.serialize();
+      if (pruned !== fileBackup) await writeFile(source.filePath, pruned, 'utf8');
+      const install = await resolveLockfile(ctx);
+      if (install.exitCode !== 0) {
+        const cause =
+          pruned === fileBackup
+            ? 'the lockfile does not resolve even with every override in place'
+            : "the other pruners' changes do not resolve";
+        const reason = `${cause}, so no override was evaluated: ${install.output}`;
+        for (const { key } of entries) skipped.push({ key, reason });
+        return { pruner: 'overrides', removed, skipped };
       }
+      fileAccepted = pruned;
+      lockAccepted = await readFiles(lockfilePaths);
       for (const { key, value: range } of entries) {
-        const decision = await evaluateOverride(ctx, key, range, removed, baseline);
+        const decision = await evaluateOverride(ctx, source, key, range, removed, baseline);
         if (decision.action === 'remove') {
           toRemoveKeys.push(key);
           removed.push({
@@ -108,60 +109,119 @@ export const overridesPruner: Pruner = {
             key,
             value: range,
             reason: decision.reason,
-            file: ctx.workspace.filePath,
+            file: source.filePath,
           });
-          wsAccepted = await readFile(ctx.workspace.filePath, 'utf8');
+          fileAccepted = await readFile(source.filePath, 'utf8');
           lockAccepted = await readFiles(lockfilePaths);
         } else {
           skipped.push({ key, reason: decision.reason });
-          await restore(ctx.workspace.filePath, wsAccepted);
+          await restore(source.filePath, fileAccepted);
           await writeFiles(lockAccepted);
         }
       }
     } finally {
-      await restore(ctx.workspace.filePath, wsBackup);
+      await restore(source.filePath, fileBackup);
       await writeFiles(lockBackup);
     }
 
-    if (toRemoveKeys.length > 0) {
-      removeFromMap(ctx.workspace.document, 'overrides', toRemoveKeys, overrideTargetName);
-      if (isCollectionEmpty(ctx.workspace.document, 'overrides')) {
-        removeKey(ctx.workspace.document, 'overrides');
-      }
-    }
-
+    if (toRemoveKeys.length > 0) source.remove(toRemoveKeys);
     return { pruner: 'overrides', removed, skipped };
   },
 };
 
+/** Where a package manager keeps its overrides, and how to edit them. */
+interface OverridesSource {
+  filePath: string;
+  /** Overrides whose value is a version range, in file order. */
+  entries: Array<{ key: string; value: string }>;
+  /** Overrides this pruner cannot evaluate; they are always kept. */
+  unsupported: Array<{ key: string; reason: string }>;
+  /** The file as the other pruners' in-memory edits leave it. */
+  serialize(): string;
+  /** `text` (the file's content) with the override `key` removed. */
+  without(text: string, key: string): string;
+  /** Apply the accepted removals to the in-memory document. */
+  remove(keys: string[]): void;
+}
+
+function pnpmSource(ctx: PrunerContext): OverridesSource | null {
+  const workspace = ctx.workspace;
+  if (!workspace) return null;
+  return {
+    filePath: workspace.filePath,
+    entries: readMapEntries(workspace.document, 'overrides'),
+    unsupported: [],
+    serialize: () => workspace.document.toString({ lineWidth: 0 }),
+    without(text, key) {
+      const doc = parseDocument(text);
+      const overrides = doc.get('overrides', true);
+      if (isMap(overrides)) {
+        overrides.delete(key);
+        if (overrides.items.length === 0) doc.delete('overrides');
+      }
+      return doc.toString({ lineWidth: 0 });
+    },
+    remove(keys) {
+      removeFromMap(workspace.document, 'overrides', keys, overrideTargetName);
+      if (isCollectionEmpty(workspace.document, 'overrides')) {
+        removeKey(workspace.document, 'overrides');
+      }
+    },
+  };
+}
+
+/**
+ * npm's `package.json#overrides`. Only top-level string values are evaluated:
+ * a nested object scopes overrides to a parent package and a `$name` value
+ * refers to a direct dependency, and neither maps onto a single version range.
+ */
+function npmSource(ctx: PrunerContext): OverridesSource | null {
+  const pkg = ctx.packageJson;
+  if (!pkg) return null;
+  const overrides = pkg.json.overrides;
+  const entries: OverridesSource['entries'] = [];
+  const unsupported: OverridesSource['unsupported'] = [];
+  if (overrides && typeof overrides === 'object' && !Array.isArray(overrides)) {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (typeof value !== 'string') {
+        unsupported.push({ key, reason: 'nested npm overrides are not evaluated' });
+      } else if (value.startsWith('$')) {
+        unsupported.push({ key, reason: `"${value}" refers to a dependency and is not evaluated` });
+      } else {
+        entries.push({ key, value });
+      }
+    }
+  }
+  return {
+    filePath: pkg.filePath,
+    entries,
+    unsupported,
+    serialize: () => pkg.text,
+    without: (text, key) => removeOverrideKeys(text, [key]),
+    remove: (keys) => removeOverrides(pkg, keys),
+  };
+}
+
 async function evaluateOverride(
   ctx: PrunerContext,
+  source: OverridesSource,
   overrideKey: string,
   range: string,
   alreadyRemoved: readonly PrunedEntry[],
   baseline: PnpmLockfile | null,
 ): Promise<{ action: 'remove' | 'skip'; reason: string }> {
-  if (!ctx.workspace) return { action: 'skip', reason: 'no pnpm-workspace.yaml' };
+  const text = await readFile(source.filePath, 'utf8');
+  await writeFile(source.filePath, source.without(text, overrideKey), 'utf8');
 
-  const wsSource = await readFile(ctx.workspace.filePath, 'utf8');
-  const doc = parseDocument(wsSource);
-  const overrides = doc.get('overrides', true);
-  if (!isMap(overrides)) {
-    return { action: 'skip', reason: 'overrides block missing or malformed' };
-  }
-  overrides.delete(overrideKey);
-  if (overrides.items.length === 0) doc.delete('overrides');
-  await writeFile(ctx.workspace.filePath, doc.toString({ lineWidth: 0 }), 'utf8');
-
-  const install = await installLockfileOnly(ctx);
+  const install = await resolveLockfile(ctx);
   if (install.exitCode !== 0) {
     return {
       action: 'skip',
-      reason: `pnpm install failed while simulating removal: ${install.output}`,
+      reason: `lockfile resolution failed while simulating removal: ${install.output}`,
     };
   }
 
-  const newLockfile = await loadPnpmLockfile(ctx.cwd);
+  const newLockfile = await lockfileManager(ctx.packageManager).load(ctx.cwd);
   if (!newLockfile) {
     return { action: 'skip', reason: 'lockfile disappeared after simulation' };
   }
@@ -259,25 +319,20 @@ function violating(
   );
 }
 
-/** Run `pnpm install --lockfile-only`; `output` is the tail of its output or the error. */
-async function installLockfileOnly(
-  ctx: PrunerContext,
-): Promise<{ exitCode: number; output: string }> {
+/** Re-resolve the lockfiles; `output` is the tail of the command's output or the error. */
+async function resolveLockfile(ctx: PrunerContext): Promise<{ exitCode: number; output: string }> {
+  const { command, args } = lockfileManager(ctx.packageManager).resolveCommand;
   const output: string[] = [];
   try {
-    const exitCode = await exec(
-      'pnpm',
-      ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'],
-      {
-        cwd: ctx.cwd,
-        ignoreReturnCode: true,
-        silent: true,
-        listeners: {
-          stdout: (data) => output.push(data.toString()),
-          stderr: (data) => output.push(data.toString()),
-        },
+    const exitCode = await exec(command, args, {
+      cwd: ctx.cwd,
+      ignoreReturnCode: true,
+      silent: true,
+      listeners: {
+        stdout: (data) => output.push(data.toString()),
+        stderr: (data) => output.push(data.toString()),
       },
-    );
+    });
     return { exitCode, output: `exit code ${exitCode}: ${output.join('').slice(-400)}` };
   } catch (err) {
     return { exitCode: -1, output: (err as Error).message };

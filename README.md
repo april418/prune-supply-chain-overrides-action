@@ -20,7 +20,7 @@ remove, and opens a pull request for review.
 | --- | --- |
 | `minimumReleaseAgeExclude` (pnpm) | The most recently published version of the package that is resolved in `pnpm-lock.yaml` is at least `minimumReleaseAge` minutes old. |
 | `trustPolicyExclude` (pnpm) | The most recently published resolved version is at least `trustPolicyIgnoreAfter` minutes old. |
-| `overrides` (pnpm) | Removing the override and running `pnpm install --lockfile-only` produces a lockfile in which every resolved version of the target package still satisfies the override's range, apart from versions outside the override's selector that were already resolved before. |
+| `overrides` (pnpm `pnpm-workspace.yaml`, npm `package.json`) | Removing the override and re-resolving the lockfile (`pnpm install --lockfile-only` / `npm install --package-lock-only`) produces a lockfile in which every resolved version of the target package still satisfies the override's range, apart from versions outside the override's selector that were already resolved before. |
 | `onlyBuiltDependencies` (pnpm) | The package is no longer in the dependency graph, or its currently-resolved version does not declare `preinstall` / `install` / `postinstall` scripts. |
 
 Entries that the action cannot verify (e.g. the registry has no publish time,
@@ -75,6 +75,9 @@ the action re-runs `pnpm install --lockfile-only` once more so that
 `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`). The setup shown above
 (`pnpm/action-setup` + `actions/setup-node`) covers this.
 
+For npm projects the same happens with `npm install --package-lock-only` and
+`package-lock.json`; `actions/setup-node` provides `npm`.
+
 ### Required repository settings
 
 This action opens a pull request with `GITHUB_TOKEN`, so the consumer
@@ -125,7 +128,7 @@ to `github-token`:
 | `targets` | all | Comma-separated subset of `minimumReleaseAgeExclude,overrides,trustPolicyExclude,onlyBuiltDependencies`. |
 | `package-manager` | `auto` | `auto` (detect), `pnpm`, or `npm`. |
 | `registry` | `https://registry.npmjs.org` | npm registry to query for publish times and manifests. |
-| `dry-run` | `false` | When `true`, do not create a PR or leave changes behind. The report is still emitted, and for pnpm projects the lockfile is still regenerated and verified (see below) before the files are restored. |
+| `dry-run` | `false` | When `true`, do not create a PR or leave changes behind. The report is still emitted, and the lockfile is still regenerated and verified (see below) before the files are restored. |
 | `create-pr` | `true` | When `false`, leave changes in the working tree without opening a PR. |
 | `pr-branch` | `chore/prune-supply-chain-overrides` | Branch name for the PR. Reused on every run — see [Repeated runs](#repeated-runs-and-open-prs). |
 | `pr-title` | `chore: prune stale supply-chain overrides` | Title of the PR. |
@@ -266,13 +269,18 @@ inspect its `scripts` field.
 
 ## Limitations
 
-- pnpm is the primary supported workflow. `npm` (`package.json#overrides`) is
-  detected and partially supported but the `overrides` simulator currently
-  relies on `pnpm install --lockfile-only`. Track npm support in
-  [#1](https://github.com/april418/prune-supply-chain-overrides-action/issues/1).
+- For npm projects only the `overrides` pruner applies (npm has no
+  equivalent of the other settings). Only top-level string overrides are
+  evaluated; nested overrides (an object scoping overrides to a parent
+  package) and `$name` references are always kept. `npm` must be on `PATH`.
 - Yarn `resolutions` is not yet supported.
 - The action does not currently inspect `auditConfig`, `peerDependencyRules`,
   or `patchedDependencies`. These are out of scope until there is demand.
+- Removal is simulated with `--lockfile-only` / `--package-lock-only`, which
+  keeps versions already in the lockfile when they still satisfy their ranges.
+  An override that only holds a version *down* (e.g. to stay below a
+  compromised release) can therefore look redundant: without it the locked
+  version stays, but a later update may move past it.
 - For very large monorepos with many overrides, the overrides pruner can be
   slow (one `pnpm install --lockfile-only` per entry).
 

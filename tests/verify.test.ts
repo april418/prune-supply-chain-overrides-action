@@ -53,7 +53,7 @@ describe('regenerateAndVerify', () => {
     const cwd = await projectWithLockfile();
     resolveTmpTo('0.2.7');
 
-    await expect(regenerateAndVerify(cwd, reports, null, consoleLogger)).resolves.toEqual([
+    await expect(regenerateAndVerify(cwd, 'pnpm', reports, null, consoleLogger)).resolves.toEqual([
       path.join(cwd, 'pnpm-lock.yaml'),
     ]);
   });
@@ -62,7 +62,7 @@ describe('regenerateAndVerify', () => {
     const cwd = await projectWithLockfile();
     resolveTmpTo('0.0.33', '0.2.7');
 
-    await expect(regenerateAndVerify(cwd, reports, null, consoleLogger)).rejects.toThrow(
+    await expect(regenerateAndVerify(cwd, 'pnpm', reports, null, consoleLogger)).rejects.toThrow(
       /no longer satisfies removed overrides: tmp@<0\.2\.6 \(tmp 0\.0\.33/,
     );
   });
@@ -70,7 +70,9 @@ describe('regenerateAndVerify', () => {
   it('returns null without running pnpm when there is no lockfile', async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), 'verify-test-'));
 
-    await expect(regenerateAndVerify(cwd, reports, null, consoleLogger)).resolves.toEqual([]);
+    await expect(regenerateAndVerify(cwd, 'pnpm', reports, null, consoleLogger)).resolves.toEqual(
+      [],
+    );
     expect(execMock).not.toHaveBeenCalled();
   });
 });
