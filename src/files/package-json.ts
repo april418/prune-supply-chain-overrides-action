@@ -1,16 +1,18 @@
 import { readFile, writeFile, access } from 'node:fs/promises';
 import path from 'node:path';
 import { PrunerError } from '../util/errors.js';
+import { removeOverrideKeys } from './json-text.js';
 
 export interface PackageJsonData {
   filePath: string;
   raw: string;
-  /** Parsed JSON. Mutations are written back via {@link savePackageJson}. */
+  /**
+   * Parsed JSON. Edit it only through helpers such as {@link removeOverrides},
+   * which keep `text` in step; {@link savePackageJson} writes `text`.
+   */
   json: Record<string, unknown>;
-  /** Indentation string detected from the source ("  ", "\t", etc.). */
-  indent: string;
-  /** Whether the file ends with a newline. */
-  trailingNewline: boolean;
+  /** The file's content with the edits applied so far, formatted as the original. */
+  text: string;
 }
 
 export async function loadPackageJson(cwd: string): Promise<PackageJsonData | null> {
@@ -31,14 +33,18 @@ export async function loadPackageJson(cwd: string): Promise<PackageJsonData | nu
     filePath,
     raw,
     json,
-    indent: detectIndent(raw),
-    trailingNewline: raw.endsWith('\n'),
+    text: raw,
   };
 }
 
+/** Remove `keys` from `overrides`, cutting them out of `text` so its formatting stays. */
+export function removeOverrides(data: PackageJsonData, keys: string[]): void {
+  removeFromObjectField(data.json, 'overrides', keys);
+  data.text = removeOverrideKeys(data.text, keys);
+}
+
 export async function savePackageJson(data: PackageJsonData): Promise<void> {
-  let next = JSON.stringify(data.json, null, data.indent);
-  if (data.trailingNewline) next += '\n';
+  const next = data.text;
   if (next === data.raw) return;
   await writeFile(data.filePath, next, 'utf8');
   data.raw = next;
@@ -63,12 +69,4 @@ export function removeFromObjectField(
   }
   if (Object.keys(obj).length === 0) delete json[field];
   return removed;
-}
-
-function detectIndent(raw: string): string {
-  for (const line of raw.split('\n')) {
-    const match = /^([ \t]+)\S/.exec(line);
-    if (match) return match[1]!;
-  }
-  return '  ';
 }
