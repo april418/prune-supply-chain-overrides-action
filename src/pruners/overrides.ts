@@ -27,10 +27,12 @@ const NESTED_DELIMITER = /[^ |@]>/;
 export function parseOverrideKey(key: string): { name: string; selector?: string } {
   const delimiter = key.search(NESTED_DELIMITER);
   const target = delimiter === -1 ? key : key.slice(delimiter + 2);
-  // lastIndexOf('@') === 0 means a scoped name with no selector (`@scope/pkg`);
-  // <0 means an unscoped name with no selector.
-  const at = target.lastIndexOf('@');
-  return at > 0 ? { name: target.slice(0, at), selector: target.slice(at + 1) } : { name: target };
+  // Same split as pnpm's parseWantedDependency: the first "@" after a scope's
+  // leading one, so a selector such as `npm:bar@^1` keeps its own "@".
+  const at = target.indexOf('@', 1);
+  return at === -1
+    ? { name: target }
+    : { name: target.slice(0, at), selector: target.slice(at + 1) };
 }
 
 /** The bare package name an override key targets, as keyed in resolvedVersions. */
