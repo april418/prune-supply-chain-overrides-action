@@ -45,4 +45,15 @@ describe('parseOverrideKey', () => {
     });
     expect(parseOverrideKey('@scope/pkg')).toEqual({ name: '@scope/pkg' });
   });
+
+  it('splits at the first "@" after the name, as pnpm does', () => {
+    expect(parseOverrideKey('foo@npm:bar@^1.0.0')).toEqual({
+      name: 'foo',
+      selector: 'npm:bar@^1.0.0',
+    });
+    expect(parseOverrideKey('@scope/foo@npm:@scope/bar@1')).toEqual({
+      name: '@scope/foo',
+      selector: 'npm:@scope/bar@1',
+    });
+  });
 });
