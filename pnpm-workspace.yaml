@@ -30,7 +30,10 @@ overrides:
   # @actions/http-client>undici 経由で取り込まれ、ncc で dist にもバンドルされる。
   # < 8.10.2 にも WebSocket の DoS (GHSA-rfgv-xxqx-mfg5, high) や
   # BalancedPool の TLS 検証バイパス (GHSA-w293-vg96-wgc3, high) など 10 件。
-  undici: '>=8.10.2'
+  # 8.11.0 は読み込むだけで Node 組み込み fetch の gzip 展開を壊すため除外する
+  # (nodejs/undici#5865)。registry への fetch が全件失敗し、release age 系の
+  # pruner が何も削除できなくなる。
+  undici: '>=8.10.2 <8.11.0 || >=8.11.1'
 
 # peer dependency のミスマッチを警告ではなくエラーにする。
 strictPeerDependencies: true
