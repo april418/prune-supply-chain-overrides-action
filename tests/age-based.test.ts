@@ -37,6 +37,7 @@ async function setupCtx(opts: {
     lockfile: opts.lockfile
       ? {
           filePath: path.join(dir, 'pnpm-lock.yaml'),
+          filePaths: [path.join(dir, 'pnpm-lock.yaml')],
           lockfileVersion: '9.0',
           resolvedVersions: opts.lockfile,
           recordedOverrides: {},

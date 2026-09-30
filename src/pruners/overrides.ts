@@ -1,5 +1,4 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import { exec } from '@actions/exec';
 import semver from 'semver';
 import { parseDocument, isMap } from 'yaml';
@@ -11,7 +10,11 @@ import {
   isCollectionEmpty,
   removeKey,
 } from '../files/pnpm-workspace.js';
-import { loadPnpmLockfile, type PnpmLockfile } from '../lockfile/pnpm-lockfile.js';
+import {
+  findPnpmLockfiles,
+  loadPnpmLockfile,
+  type PnpmLockfile,
+} from '../lockfile/pnpm-lockfile.js';
 
 // pnpm's own parent>child delimiter (parse-overrides). A `>` preceded by a
 // space, `|` or `@` belongs to a range selector such as `foo@>=1.0.0 <2`.
@@ -67,17 +70,15 @@ export const overridesPruner: Pruner = {
     const entries = readMapEntries(ctx.workspace.document, 'overrides');
     if (entries.length === 0) return { pruner: 'overrides', removed, skipped };
 
-    const lockfilePath = path.join(ctx.cwd, 'pnpm-lock.yaml');
-    const wsBackup = await readFile(ctx.workspace.filePath, 'utf8');
-    let lockBackup: string | null = null;
-    try {
-      lockBackup = await readFile(lockfilePath, 'utf8');
-    } catch {
+    const lockfilePaths = await findPnpmLockfiles(ctx.cwd);
+    if (lockfilePaths.length === 0) {
       ctx.logger.warn(
         'overrides pruner: pnpm-lock.yaml is missing — skipping (a lockfile is required to verify resolution).',
       );
       return { pruner: 'overrides', removed, skipped };
     }
+    const wsBackup = await readFile(ctx.workspace.filePath, 'utf8');
+    const lockBackup = await readFiles(lockfilePaths);
     const baseline = await loadPnpmLockfile(ctx.cwd);
 
     const toRemoveKeys: string[] = [];
@@ -96,7 +97,7 @@ export const overridesPruner: Pruner = {
           return { pruner: 'overrides', removed, skipped };
         }
         wsAccepted = wsPruned;
-        lockAccepted = await readFile(lockfilePath, 'utf8');
+        lockAccepted = await readFiles(lockfilePaths);
       }
       for (const { key, value: range } of entries) {
         const decision = await evaluateOverride(ctx, key, range, removed, baseline);
@@ -110,16 +111,16 @@ export const overridesPruner: Pruner = {
             file: ctx.workspace.filePath,
           });
           wsAccepted = await readFile(ctx.workspace.filePath, 'utf8');
-          lockAccepted = await readFile(lockfilePath, 'utf8');
+          lockAccepted = await readFiles(lockfilePaths);
         } else {
           skipped.push({ key, reason: decision.reason });
           await restore(ctx.workspace.filePath, wsAccepted);
-          await writeFile(lockfilePath, lockAccepted, 'utf8');
+          await writeFiles(lockAccepted);
         }
       }
     } finally {
       await restore(ctx.workspace.filePath, wsBackup);
-      await writeFile(lockfilePath, lockBackup, 'utf8');
+      await writeFiles(lockBackup);
     }
 
     if (toRemoveKeys.length > 0) {
@@ -281,6 +282,16 @@ async function installLockfileOnly(
   } catch (err) {
     return { exitCode: -1, output: (err as Error).message };
   }
+}
+
+async function readFiles(paths: readonly string[]): Promise<Map<string, string>> {
+  return new Map(
+    await Promise.all(paths.map(async (p) => [p, await readFile(p, 'utf8')] as const)),
+  );
+}
+
+async function writeFiles(contents: ReadonlyMap<string, string>): Promise<void> {
+  await Promise.all([...contents].map(([p, content]) => writeFile(p, content, 'utf8')));
 }
 
 async function restore(filePath: string, original: string): Promise<void> {

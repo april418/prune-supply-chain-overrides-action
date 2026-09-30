@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import semver from 'semver';
@@ -239,9 +239,54 @@ overrides:
   });
 });
 
+describe('overridesPruner with per-project lockfiles', () => {
+  beforeEach(() => {
+    graph = DEFAULT_GRAPH;
+    execMock.mockReset();
+  });
+
+  it('evaluates against project lockfiles and restores them afterwards', async () => {
+    const ws = `sharedWorkspaceLockfile: false
+overrides:
+  tmp@<=0.2.3: '>=0.2.4'
+  tmp@<0.2.6: '>=0.2.6'
+`;
+    const cwd = await mkdtemp(path.join(tmpdir(), 'overrides-pruner-test-'));
+    await writeFile(path.join(cwd, 'pnpm-workspace.yaml'), ws, 'utf8');
+    const projectLock = path.join(cwd, 'packages', 'x', 'pnpm-lock.yaml');
+    await mkdir(path.dirname(projectLock), { recursive: true });
+    // Resolve like pnpm, but into the project's lockfile instead of the root one.
+    const installIntoProject = async () => {
+      await fakePnpmInstall(cwd);
+      await rename(path.join(cwd, 'pnpm-lock.yaml'), projectLock);
+      return 0;
+    };
+    await installIntoProject();
+    const original = await readFile(projectLock, 'utf8');
+    execMock.mockImplementation(installIntoProject);
+    const ctx: PrunerContext = {
+      cwd,
+      packageManager: 'pnpm',
+      registry: {} as PrunerContext['registry'],
+      workspace: await loadPnpmWorkspace(cwd),
+      packageJson: null,
+      npmrc: null,
+      lockfile: null,
+      now: new Date(),
+      logger: consoleLogger,
+    };
+
+    const report = await overridesPruner.run(ctx);
+
+    expect(report.removed.map((e) => e.key)).toEqual(['tmp@<=0.2.3']);
+    expect(await readFile(projectLock, 'utf8')).toBe(original);
+  });
+});
+
 describe('findUnsatisfiedOverrides', () => {
   const lockfile = {
     filePath: 'pnpm-lock.yaml',
+    filePaths: ['pnpm-lock.yaml'],
     lockfileVersion: '9.0',
     resolvedVersions: new Map([['tmp', new Set(['0.0.33', '0.2.7'])]]),
     recordedOverrides: {},

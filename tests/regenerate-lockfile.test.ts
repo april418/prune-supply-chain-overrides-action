@@ -20,7 +20,7 @@ describe('regeneratePnpmLockfile', () => {
   it('returns null when pnpm-lock.yaml is missing', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'regenerate-test-'));
     const result = await regeneratePnpmLockfile(dir, consoleLogger);
-    expect(result).toBeNull();
+    expect(result).toEqual([]);
     expect(execMock).not.toHaveBeenCalled();
   });
 
@@ -31,7 +31,7 @@ describe('regeneratePnpmLockfile', () => {
 
     const result = await regeneratePnpmLockfile(dir, consoleLogger);
 
-    expect(result).toBe(path.join(dir, 'pnpm-lock.yaml'));
+    expect(result).toEqual([path.join(dir, 'pnpm-lock.yaml')]);
     expect(execMock).toHaveBeenCalledTimes(1);
     const [cmd, args, opts] = execMock.mock.calls[0]!;
     expect(cmd).toBe('pnpm');

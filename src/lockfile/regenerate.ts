@@ -1,7 +1,6 @@
-import { access } from 'node:fs/promises';
-import path from 'node:path';
 import { exec } from '@actions/exec';
 import type { Logger } from '../util/logger.js';
+import { findPnpmLockfiles } from './pnpm-lockfile.js';
 
 /**
  * Re-run `pnpm install --lockfile-only` so that `pnpm-lock.yaml` reflects the
@@ -10,19 +9,14 @@ import type { Logger } from '../util/logger.js';
  * `pnpm install --frozen-lockfile` because the `overrides` block recorded in
  * the lockfile no longer matches what the workspace file declares.
  *
- * Returns the absolute path of the (now-updated) lockfile, or null when there
- * is no lockfile to regenerate.
+ * Returns the absolute paths of the (now-updated) lockfiles, including
+ * per-project ones (see {@link findPnpmLockfiles}), or an empty array when
+ * there is no lockfile to regenerate.
  */
-export async function regeneratePnpmLockfile(
-  cwd: string,
-  logger: Logger,
-): Promise<string | null> {
-  const lockfilePath = path.join(cwd, 'pnpm-lock.yaml');
-  try {
-    await access(lockfilePath);
-  } catch {
+export async function regeneratePnpmLockfile(cwd: string, logger: Logger): Promise<string[]> {
+  if ((await findPnpmLockfiles(cwd)).length === 0) {
     logger.info('No pnpm-lock.yaml found — skipping lockfile regeneration.');
-    return null;
+    return [];
   }
   const exitCode = await exec(
     'pnpm',
@@ -38,5 +32,5 @@ export async function regeneratePnpmLockfile(
         'The pruned files do not resolve, so no pull request was created.',
     );
   }
-  return lockfilePath;
+  return findPnpmLockfiles(cwd);
 }
