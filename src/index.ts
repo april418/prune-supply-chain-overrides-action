@@ -60,8 +60,14 @@ export async function run(): Promise<void> {
     logger,
   };
 
+  // The overrides pruner resolves the lockfile on top of the other pruners'
+  // removals, so it has to run after all of them.
+  const targets = [
+    ...inputs.targets.filter((t) => t !== 'overrides'),
+    ...inputs.targets.filter((t) => t === 'overrides'),
+  ];
   const reports: PrunerReport[] = [];
-  for (const targetName of inputs.targets) {
+  for (const targetName of targets) {
     const pruner = REGISTRY[targetName];
     if (!pruner) continue;
     const report = await logger.group(`Pruner: ${targetName}`, async () => {

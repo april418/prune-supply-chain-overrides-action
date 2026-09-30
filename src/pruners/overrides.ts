@@ -84,6 +84,20 @@ export const overridesPruner: Pruner = {
     let wsAccepted = wsBackup;
     let lockAccepted = lockBackup;
     try {
+      // Other pruners edit only the in-memory document, so start from it: an
+      // override may be needed only because an exclude above is being removed.
+      const wsPruned = ctx.workspace.document.toString({ lineWidth: 0 });
+      if (wsPruned !== wsBackup) {
+        await writeFile(ctx.workspace.filePath, wsPruned, 'utf8');
+        const install = await installLockfileOnly(ctx);
+        if (install.exitCode !== 0) {
+          const reason = `the other pruners' changes do not resolve, so no override was evaluated: ${install.output}`;
+          for (const { key } of entries) skipped.push({ key, reason });
+          return { pruner: 'overrides', removed, skipped };
+        }
+        wsAccepted = wsPruned;
+        lockAccepted = await readFile(lockfilePath, 'utf8');
+      }
       for (const { key, value: range } of entries) {
         const decision = await evaluateOverride(ctx, key, range, removed, baseline);
         if (decision.action === 'remove') {
@@ -138,32 +152,11 @@ async function evaluateOverride(
   if (overrides.items.length === 0) doc.delete('overrides');
   await writeFile(ctx.workspace.filePath, doc.toString({ lineWidth: 0 }), 'utf8');
 
-  const output: string[] = [];
-  let exitCode: number;
-  try {
-    exitCode = await exec(
-      'pnpm',
-      ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'],
-      {
-        cwd: ctx.cwd,
-        ignoreReturnCode: true,
-        silent: true,
-        listeners: {
-          stdout: (data) => output.push(data.toString()),
-          stderr: (data) => output.push(data.toString()),
-        },
-      },
-    );
-  } catch (err) {
+  const install = await installLockfileOnly(ctx);
+  if (install.exitCode !== 0) {
     return {
       action: 'skip',
-      reason: `pnpm install failed while simulating removal: ${(err as Error).message}`,
-    };
-  }
-  if (exitCode !== 0) {
-    return {
-      action: 'skip',
-      reason: `pnpm install exited with code ${exitCode}: ${output.join('').slice(-400)}`,
+      reason: `pnpm install failed while simulating removal: ${install.output}`,
     };
   }
 
@@ -263,6 +256,31 @@ function violating(
       !semver.satisfies(v, range) &&
       (semver.satisfies(v, scope, { includePrerelease: true }) || !baselineVersions?.has(v)),
   );
+}
+
+/** Run `pnpm install --lockfile-only`; `output` is the tail of its output or the error. */
+async function installLockfileOnly(
+  ctx: PrunerContext,
+): Promise<{ exitCode: number; output: string }> {
+  const output: string[] = [];
+  try {
+    const exitCode = await exec(
+      'pnpm',
+      ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'],
+      {
+        cwd: ctx.cwd,
+        ignoreReturnCode: true,
+        silent: true,
+        listeners: {
+          stdout: (data) => output.push(data.toString()),
+          stderr: (data) => output.push(data.toString()),
+        },
+      },
+    );
+    return { exitCode, output: `exit code ${exitCode}: ${output.join('').slice(-400)}` };
+  } catch (err) {
+    return { exitCode: -1, output: (err as Error).message };
+  }
 }
 
 async function restore(filePath: string, original: string): Promise<void> {
