@@ -9,7 +9,7 @@ import { loadNpmrc, saveNpmrc } from './files/npmrc.js';
 import { loadPnpmLockfile } from './lockfile/pnpm-lockfile.js';
 import { regeneratePnpmLockfile } from './lockfile/regenerate.js';
 import { minimumReleaseAgeExcludePruner, trustPolicyExcludePruner } from './pruners/age-based.js';
-import { overridesPruner } from './pruners/overrides.js';
+import { findUnsatisfiedOverrides, overridesPruner } from './pruners/overrides.js';
 import { onlyBuiltDependenciesPruner } from './pruners/only-built-dependencies.js';
 import type { Pruner, PrunerContext } from './pruners/types.js';
 import type { PrunerName, PrunerReport } from './types.js';
@@ -89,6 +89,19 @@ export async function run(): Promise<void> {
     });
     if (regenerated && !changedFiles.includes(regenerated)) {
       changedFiles.push(regenerated);
+    }
+    // The overrides pruner verified its removals before the other pruners'
+    // edits were written, so re-check them against the lockfile actually
+    // being committed. The resulting PR is made with GITHUB_TOKEN and gets no CI.
+    const finalLockfile = regenerated ? await loadPnpmLockfile(cwd) : null;
+    if (finalLockfile) {
+      const removedOverrides = reports.flatMap((r) => (r.pruner === 'overrides' ? r.removed : []));
+      const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides);
+      if (regressions.length > 0) {
+        throw new Error(
+          `Regenerated pnpm-lock.yaml no longer satisfies removed overrides: ${regressions.join('; ')}`,
+        );
+      }
     }
   }
 
