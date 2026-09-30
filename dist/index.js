@@ -58976,25 +58976,29 @@ const trustPolicyExcludePruner = new AgeBasedPruner({
 // space, `|` or `@` belongs to a range selector such as `foo@>=1.0.0 <2`.
 const NESTED_DELIMITER = /[^ |@]>/;
 /**
- * Extract the bare package name from a pnpm `overrides` key.
+ * Split a pnpm `overrides` key into the target package name and its version
+ * selector (`undefined` when the key has none).
  *
- * Override keys carry a version selector and may use the nested
- * `parent>child` syntax, e.g. `tmp@<0.2.6`, `@scope/pkg@>=1.0.0 <2`,
- * `foo>bar@1.0.0`. The lockfile's resolvedVersions map is keyed by bare
- * package name, so lookups must use the name this returns.
+ * Override keys may use the nested `parent>child` syntax, e.g. `tmp@<0.2.6`,
+ * `@scope/pkg@>=1.0.0 <2`, `foo>bar@1.0.0`; the target is the child.
  */
-function overrideTargetName(key) {
+function parseOverrideKey(key) {
     const delimiter = key.search(NESTED_DELIMITER);
     const target = delimiter === -1 ? key : key.slice(delimiter + 2);
     // lastIndexOf('@') === 0 means a scoped name with no selector (`@scope/pkg`);
     // <0 means an unscoped name with no selector.
     const at = target.lastIndexOf('@');
-    return at > 0 ? target.slice(0, at) : target;
+    return at > 0 ? { name: target.slice(0, at), selector: target.slice(at + 1) } : { name: target };
+}
+/** The bare package name an override key targets, as keyed in resolvedVersions. */
+function overrideTargetName(key) {
+    return parseOverrideKey(key).name;
 }
 /**
- * Remove `overrides` entries whose pin is no longer load-bearing — i.e. the
- * natural resolution (without the override) already satisfies the override
- * range. Verified by running `pnpm install --lockfile-only` against a backup
+ * Remove `overrides` entries whose pin is no longer load-bearing — i.e. no
+ * version of the target that the override would rewrite (one matching its
+ * selector but not its range) remains in the natural resolution without the
+ * override. Verified by running `pnpm install --lockfile-only` against a backup
  * copy of pnpm-workspace.yaml / pnpm-lock.yaml.
  *
  * Removals are evaluated cumulatively: each candidate is tried on top of the
@@ -59114,7 +59118,7 @@ async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved) {
             reason: `removing the override would also undo an already-removed override: ${regressions.join('; ')}`,
         };
     }
-    const targetName = overrideTargetName(overrideKey);
+    const { name: targetName, selector } = parseOverrideKey(overrideKey);
     const versions = newLockfile.resolvedVersions.get(targetName);
     if (!versions || versions.size === 0) {
         return {
@@ -59122,11 +59126,14 @@ async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved) {
             reason: `${targetName} is no longer pulled into the dependency graph after removing the override`,
         };
     }
-    const violators = unsatisfied(versions, range);
+    const violators = violating(versions, overrideKey, range);
     if (violators.length === 0) {
+        const resolved = [...versions].join(', ');
         return {
             action: 'remove',
-            reason: `natural resolution (${[...versions].join(', ')}) already satisfies "${range}"`,
+            reason: selector && semver_default().validRange(selector)
+                ? `natural resolution (${resolved}) has no version matching "${selector}" outside "${range}"`
+                : `natural resolution (${resolved}) already satisfies "${range}"`,
         };
     }
     return {
@@ -59136,8 +59143,8 @@ async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved) {
 }
 /**
  * Check removed overrides against a lockfile. Returns one message per removed
- * override whose target now resolves to a version outside the override's
- * range; an empty array means every removal still holds.
+ * override whose target now resolves to a version it would have rewritten
+ * (see {@link violating}); an empty array means every removal still holds.
  */
 function findUnsatisfiedOverrides(lockfile, removedOverrides) {
     const out = [];
@@ -59148,15 +59155,27 @@ function findUnsatisfiedOverrides(lockfile, removedOverrides) {
         const versions = lockfile.resolvedVersions.get(name);
         if (!versions)
             continue;
-        const violators = unsatisfied(versions, range);
+        const violators = violating(versions, key, range);
         if (violators.length > 0) {
             out.push(`${key} (${name} ${violators.join(', ')} does not satisfy "${range}")`);
         }
     }
     return out;
 }
-function unsatisfied(versions, range) {
-    return [...versions].filter((v) => semver_default().valid(v) && !semver_default().satisfies(v, range));
+/**
+ * Versions the override would rewrite: those matching its selector but not
+ * its range. Versions outside the selector are never touched by the override,
+ * so an override per major series (`foo@<1.2.0`, `foo@>=2.0.0 <2.3.0`) is not
+ * held in place by the other series. A missing or non-semver selector matches
+ * every version.
+ */
+function violating(versions, key, range) {
+    const { selector } = parseOverrideKey(key);
+    const scope = selector && semver_default().validRange(selector) ? selector : '*';
+    // includePrerelease widens the scope only, so a prerelease is never exempted.
+    return [...versions].filter((v) => semver_default().valid(v) &&
+        semver_default().satisfies(v, scope, { includePrerelease: true }) &&
+        !semver_default().satisfies(v, range));
 }
 async function restore(filePath, original) {
     await (0,promises_.writeFile)(filePath, original, 'utf8');
