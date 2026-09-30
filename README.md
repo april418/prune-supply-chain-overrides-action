@@ -199,6 +199,11 @@ Overrides are typically added either to backport a fix
 (e.g. `fast-uri: '>=3.1.2'`) or to deduplicate a transitive dependency. Once
 the natural resolution catches up, the override is a no-op.
 
+The pruner runs after the other pruners, whatever the order of `targets`, and
+starts from the file as they left it: an override can be needed only because
+a `minimumReleaseAgeExclude` or `trustPolicyExclude` entry is being removed in
+the same run. If that state does not resolve, no override is removed.
+
 The pruner verifies this by:
 
 1. Backing up `pnpm-workspace.yaml` and `pnpm-lock.yaml`.

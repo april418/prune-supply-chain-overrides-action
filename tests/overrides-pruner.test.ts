@@ -5,7 +5,7 @@ import semver from 'semver';
 import { parse as parseYaml } from 'yaml';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { consoleLogger } from '../src/util/logger.js';
-import { loadPnpmWorkspace } from '../src/files/pnpm-workspace.js';
+import { loadPnpmWorkspace, removeFromSequence } from '../src/files/pnpm-workspace.js';
 import type { PrunerContext } from '../src/pruners/types.js';
 
 const execMock = vi.hoisted(() => vi.fn());
@@ -193,6 +193,49 @@ describe('overridesPruner', () => {
       expect(report.removed).toEqual([]);
       expect(report.skipped[0]!.reason).toContain('3.0.0');
     });
+  });
+});
+
+describe('overridesPruner after other pruners', () => {
+  const WITH_EXCLUDE = `minimumReleaseAgeExclude:
+  - tmp
+overrides:
+  tmp@<=0.2.3: '>=0.2.4'
+`;
+
+  beforeEach(() => {
+    graph = DEFAULT_GRAPH;
+    execMock.mockReset();
+  });
+
+  it('simulates on top of entries other pruners already removed in memory', async () => {
+    const seen: string[] = [];
+    execMock.mockImplementation(async (_cmd: string, _args: string[], opts: { cwd: string }) => {
+      seen.push(await readFile(path.join(opts.cwd, 'pnpm-workspace.yaml'), 'utf8'));
+      return fakePnpmInstall(opts.cwd);
+    });
+    const ctx = await setup(WITH_EXCLUDE);
+    removeFromSequence(ctx.workspace!.document, 'minimumReleaseAgeExclude', ['tmp']);
+
+    await overridesPruner.run(ctx);
+
+    expect(seen.length).toBeGreaterThan(0);
+    for (const content of seen) expect(content).not.toContain('- tmp');
+    // The files on disk are left for index.ts to write.
+    expect(await readFile(path.join(ctx.cwd, 'pnpm-workspace.yaml'), 'utf8')).toBe(WITH_EXCLUDE);
+  });
+
+  it("keeps every override when the other pruners' changes do not resolve", async () => {
+    const ctx = await setup(WITH_EXCLUDE);
+    execMock.mockResolvedValue(1);
+    removeFromSequence(ctx.workspace!.document, 'minimumReleaseAgeExclude', ['tmp']);
+
+    const report = await overridesPruner.run(ctx);
+
+    expect(report.removed).toEqual([]);
+    expect(report.skipped).toEqual([
+      { key: 'tmp@<=0.2.3', reason: expect.stringContaining('other pruners') },
+    ]);
   });
 });
 

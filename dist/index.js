@@ -60101,6 +60101,21 @@ const overridesPruner = {
         let wsAccepted = wsBackup;
         let lockAccepted = lockBackup;
         try {
+            // Other pruners edit only the in-memory document, so start from it: an
+            // override may be needed only because an exclude above is being removed.
+            const wsPruned = ctx.workspace.document.toString({ lineWidth: 0 });
+            if (wsPruned !== wsBackup) {
+                await (0,promises_.writeFile)(ctx.workspace.filePath, wsPruned, 'utf8');
+                const install = await installLockfileOnly(ctx);
+                if (install.exitCode !== 0) {
+                    const reason = `the other pruners' changes do not resolve, so no override was evaluated: ${install.output}`;
+                    for (const { key } of entries)
+                        skipped.push({ key, reason });
+                    return { pruner: 'overrides', removed, skipped };
+                }
+                wsAccepted = wsPruned;
+                lockAccepted = await (0,promises_.readFile)(lockfilePath, 'utf8');
+            }
             for (const { key, value: range } of entries) {
                 const decision = await evaluateOverride(ctx, key, range, removed, baseline);
                 if (decision.action === 'remove') {
@@ -60148,29 +60163,11 @@ async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved, baselin
     if (overrides.items.length === 0)
         doc.delete('overrides');
     await (0,promises_.writeFile)(ctx.workspace.filePath, doc.toString({ lineWidth: 0 }), 'utf8');
-    const output = [];
-    let exitCode;
-    try {
-        exitCode = await (0,exec.exec)('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'], {
-            cwd: ctx.cwd,
-            ignoreReturnCode: true,
-            silent: true,
-            listeners: {
-                stdout: (data) => output.push(data.toString()),
-                stderr: (data) => output.push(data.toString()),
-            },
-        });
-    }
-    catch (err) {
+    const install = await installLockfileOnly(ctx);
+    if (install.exitCode !== 0) {
         return {
             action: 'skip',
-            reason: `pnpm install failed while simulating removal: ${err.message}`,
-        };
-    }
-    if (exitCode !== 0) {
-        return {
-            action: 'skip',
-            reason: `pnpm install exited with code ${exitCode}: ${output.join('').slice(-400)}`,
+            reason: `pnpm install failed while simulating removal: ${install.output}`,
         };
     }
     const newLockfile = await loadPnpmLockfile(ctx.cwd);
@@ -60251,6 +60248,25 @@ function violating(versions, key, range, baselineVersions) {
     return [...versions].filter((v) => semver_default().valid(v) &&
         !semver_default().satisfies(v, range) &&
         (semver_default().satisfies(v, scope, { includePrerelease: true }) || !baselineVersions?.has(v)));
+}
+/** Run `pnpm install --lockfile-only`; `output` is the tail of its output or the error. */
+async function installLockfileOnly(ctx) {
+    const output = [];
+    try {
+        const exitCode = await (0,exec.exec)('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'], {
+            cwd: ctx.cwd,
+            ignoreReturnCode: true,
+            silent: true,
+            listeners: {
+                stdout: (data) => output.push(data.toString()),
+                stderr: (data) => output.push(data.toString()),
+            },
+        });
+        return { exitCode, output: `exit code ${exitCode}: ${output.join('').slice(-400)}` };
+    }
+    catch (err) {
+        return { exitCode: -1, output: err.message };
+    }
 }
 async function restore(filePath, original) {
     await (0,promises_.writeFile)(filePath, original, 'utf8');
@@ -60834,8 +60850,14 @@ async function run() {
         now: new Date(),
         logger,
     };
+    // The overrides pruner resolves the lockfile on top of the other pruners'
+    // removals, so it has to run after all of them.
+    const targets = [
+        ...inputs.targets.filter((t) => t !== 'overrides'),
+        ...inputs.targets.filter((t) => t === 'overrides'),
+    ];
     const reports = [];
-    for (const targetName of inputs.targets) {
+    for (const targetName of targets) {
         const pruner = REGISTRY[targetName];
         if (!pruner)
             continue;
