@@ -39,3 +39,6 @@ jobs:
             git --no-pager diff dist
             exit 1
           fi
+
+      # Runs the bundled dist with the real registry and pnpm; unit tests stub both.
+      - run: pnpm smoke
