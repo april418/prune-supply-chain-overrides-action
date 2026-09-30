@@ -118,7 +118,7 @@ to `github-token`:
 | `targets` | all | Comma-separated subset of `minimumReleaseAgeExclude,overrides,trustPolicyExclude,onlyBuiltDependencies`. |
 | `package-manager` | `auto` | `auto` (detect), `pnpm`, or `npm`. |
 | `registry` | `https://registry.npmjs.org` | npm registry to query for publish times and manifests. |
-| `dry-run` | `false` | When `true`, do not write files or create a PR. The report is still emitted. |
+| `dry-run` | `false` | When `true`, do not create a PR or leave changes behind. The report is still emitted, and for pnpm projects the lockfile is still regenerated and verified (see below) before the files are restored. |
 | `create-pr` | `true` | When `false`, leave changes in the working tree without opening a PR. |
 | `pr-branch` | `chore/prune-supply-chain-overrides` | Branch name for the PR. Reused on every run — see [Repeated runs](#repeated-runs-and-open-prs). |
 | `pr-title` | `chore: prune stale supply-chain overrides` | Title of the PR. |
@@ -210,7 +210,10 @@ redundant while the other is in place, but removing both is not safe.
 
 After all pruners run, the regenerated `pnpm-lock.yaml` is checked against
 every removed override once more, and the action fails instead of opening a
-pull request if any of them no longer holds.
+pull request if any of them no longer holds. With `dry-run: true` the same
+regeneration and check run against the pruned files, which are then restored
+together with `pnpm-lock.yaml`, so a dry run fails exactly when a real run
+would.
 
 ### `onlyBuiltDependencies`
 

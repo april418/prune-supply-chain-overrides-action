@@ -7,9 +7,9 @@ import { loadPnpmWorkspace, savePnpmWorkspace } from './files/pnpm-workspace.js'
 import { loadPackageJson, savePackageJson } from './files/package-json.js';
 import { loadNpmrc, saveNpmrc } from './files/npmrc.js';
 import { loadPnpmLockfile } from './lockfile/pnpm-lockfile.js';
-import { regeneratePnpmLockfile } from './lockfile/regenerate.js';
+import { regenerateAndVerify, withFilesRestored } from './lockfile/verify.js';
 import { minimumReleaseAgeExcludePruner, trustPolicyExcludePruner } from './pruners/age-based.js';
-import { findUnsatisfiedOverrides, overridesPruner } from './pruners/overrides.js';
+import { overridesPruner } from './pruners/overrides.js';
 import { onlyBuiltDependenciesPruner } from './pruners/only-built-dependencies.js';
 import type { Pruner, PrunerContext } from './pruners/types.js';
 import type { PrunerName, PrunerReport } from './types.js';
@@ -83,24 +83,27 @@ export async function run(): Promise<void> {
     return;
   }
 
-  if (!inputs.dryRun && packageManager === 'pnpm' && ctx.lockfile) {
-    const regenerated = await logger.group('Regenerate pnpm-lock.yaml', async () => {
-      return regeneratePnpmLockfile(cwd, logger);
-    });
-    if (regenerated && !changedFiles.includes(regenerated)) {
-      changedFiles.push(regenerated);
-    }
-    // The overrides pruner verified its removals before the other pruners'
-    // edits were written, so re-check them against the lockfile actually
-    // being committed. The resulting PR is made with GITHUB_TOKEN and gets no CI.
-    const finalLockfile = regenerated ? await loadPnpmLockfile(cwd) : null;
-    if (finalLockfile) {
-      const removedOverrides = reports.flatMap((r) => (r.pruner === 'overrides' ? r.removed : []));
-      const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides, ctx.lockfile);
-      if (regressions.length > 0) {
-        throw new Error(
-          `Regenerated pnpm-lock.yaml no longer satisfies removed overrides: ${regressions.join('; ')}`,
-        );
+  if (packageManager === 'pnpm' && ctx.lockfile) {
+    const lockfilePath = ctx.lockfile.filePath;
+    const verify = () =>
+      logger.group('Regenerate pnpm-lock.yaml', () =>
+        regenerateAndVerify(cwd, reports, ctx.lockfile, logger),
+      );
+    if (inputs.dryRun) {
+      // dry-run must leave the tree untouched, so the pruned files exist only
+      // while the lockfile is regenerated and checked against them.
+      const touched = [ctx.workspace?.filePath, ctx.packageJson?.filePath, ctx.npmrc?.filePath];
+      await withFilesRestored(
+        [lockfilePath, ...touched.filter((p): p is string => p !== undefined)],
+        async () => {
+          await persistChanges(ctx, reports, false, logger);
+          await verify();
+        },
+      );
+    } else {
+      const regenerated = await verify();
+      if (regenerated && !changedFiles.includes(regenerated)) {
+        changedFiles.push(regenerated);
       }
     }
   }
