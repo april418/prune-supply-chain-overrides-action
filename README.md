@@ -158,6 +158,20 @@ If you run the action more than once in the same repository (e.g. several
 `working-directory` values in a monorepo), give each instance a distinct
 `pr-branch` so the runs do not fight over one branch.
 
+## Comments in `pnpm-workspace.yaml`
+
+A comment above a removed entry is split into paragraphs at blank lines.
+
+- Paragraphs separated from the entry by a blank line are treated as section
+  headers and move to the next entry that stays (or to the end of the file).
+- The paragraph directly above the entry is treated as describing it. It moves
+  to the next remaining entry only when that entry overrides the same package
+  and has no comment of its own; otherwise it is removed with the entry.
+
+A header written in the same paragraph as an entry's explanation (no blank
+line between them) is therefore removed together with that entry. Comments
+elsewhere in the file that mention a removed entry are not rewritten.
+
 ## How each pruner decides
 
 ### `minimumReleaseAgeExclude`

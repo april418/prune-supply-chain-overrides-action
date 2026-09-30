@@ -53289,8 +53289,8 @@ __webpack_unused_export__ = identity.isAlias;
 __webpack_unused_export__ = identity.isCollection;
 __webpack_unused_export__ = identity.isDocument;
 exports.jh = identity.isMap;
-__webpack_unused_export__ = identity.isNode;
-__webpack_unused_export__ = identity.isPair;
+exports.Ll = identity.isNode;
+exports.tO = identity.isPair;
 exports.jn = identity.isScalar;
 exports.oP = identity.isSeq;
 __webpack_unused_export__ = Pair.Pair;
@@ -59613,7 +59613,8 @@ function readMapEntries(doc, key) {
 /**
  * Remove `values` from the YAML sequence at `key`. Returns the keys actually
  * removed. If the sequence becomes empty, the sequence node itself is left in
- * place (consumers may choose to remove it via {@link removeKey}).
+ * place (consumers may choose to remove it via {@link removeKey}). Comments
+ * around removed items are handled as described in {@link removeItems}.
  */
 function removeFromSequence(doc, key, values) {
     const node = doc.get(key, true);
@@ -59621,32 +59622,41 @@ function removeFromSequence(doc, key, values) {
         return [];
     const targets = new Set(values);
     const removed = [];
-    const seq = node;
-    seq.items = seq.items.filter((item) => {
+    const trailing = removeItems(node, (item) => {
         if ((0,dist/* isScalar */.jn)(item) && typeof item.value === 'string' && targets.has(item.value)) {
             removed.push(item.value);
-            return false;
+            return true;
         }
-        return true;
-    });
+        return false;
+    }, () => undefined);
+    appendTrailing(node, trailing);
     return removed;
 }
-/** Remove map entries with the given keys. Returns keys actually removed. */
-function removeFromMap(doc, key, keysToRemove) {
+/**
+ * Remove map entries with the given keys. Returns keys actually removed.
+ * `subjectOf` names what an entry is about (e.g. the package an override
+ * targets); a removed entry's own comment is handed to the next entry only
+ * when both share a subject. Comments are otherwise handled as described in
+ * {@link removeItems}.
+ */
+function removeFromMap(doc, key, keysToRemove, subjectOf = () => undefined) {
     const node = doc.get(key, true);
     if (!(0,dist/* isMap */.jh)(node))
         return [];
     const targets = new Set(keysToRemove);
     const removed = [];
-    const map = node;
-    map.items = map.items.filter((pair) => {
-        const k = (0,dist/* isScalar */.jn)(pair.key) ? String(pair.key.value) : String(pair.key);
-        if (targets.has(k)) {
+    const trailing = removeItems(node, (pair) => {
+        const k = pairKey(pair);
+        if (k !== undefined && targets.has(k)) {
             removed.push(k);
-            return false;
+            return true;
         }
-        return true;
+        return false;
+    }, (pair) => {
+        const k = pairKey(pair);
+        return k === undefined ? undefined : subjectOf(k);
     });
+    appendTrailing(node, trailing);
     return removed;
 }
 /** Whether a sequence/map at `key` is empty. */
@@ -59658,8 +59668,118 @@ function isCollectionEmpty(doc, key) {
         return node.items.length === 0;
     return false;
 }
+/**
+ * Remove the top-level `key`. Comment paragraphs above it that are separated
+ * from it by a blank line (section headers) move to the next top-level key, or
+ * to the end of the document when it was the last one.
+ */
 function removeKey(doc, key) {
-    doc.delete(key);
+    if (!(0,dist/* isMap */.jh)(doc.contents)) {
+        doc.delete(key);
+        return;
+    }
+    const trailing = removeItems(doc.contents, (pair) => pairKey(pair) === key, () => undefined);
+    if (trailing.length > 0) {
+        doc.comment = joinParagraphs([...trailing, ...trailingParagraphs(doc.comment)]) ?? null;
+    }
+}
+function pairKey(item) {
+    if (!(0,dist/* isPair */.tO)(item))
+        return undefined;
+    return (0,dist/* isScalar */.jn)(item.key) ? String(item.key.value) : String(item.key);
+}
+function commentHolder(item) {
+    if ((0,dist/* isPair */.tO)(item))
+        return (0,dist/* isNode */.Ll)(item.key) ? item.key : undefined;
+    return (0,dist/* isNode */.Ll)(item) ? item : undefined;
+}
+/**
+ * Split a leading comment into section headers and the paragraph sitting
+ * directly on the item (`own`). yaml marks a blank line between the comment
+ * and the item with a trailing newline, in which case every paragraph is a
+ * header.
+ */
+function splitComment(comment) {
+    if (!comment)
+        return { headers: [] };
+    const text = comment.replace(/\r\n/g, '\n');
+    const paras = text.replace(/\n+$/, '').split(/\n{2,}/);
+    if (text.endsWith('\n'))
+        return { headers: paras };
+    return { headers: paras.slice(0, -1), own: paras[paras.length - 1] };
+}
+/** Inverse of {@link splitComment}; headers alone keep a blank line below them. */
+function buildComment(headers, own) {
+    if (own !== undefined)
+        return joinParagraphs([...headers, own]);
+    return headers.length > 0 ? `${joinParagraphs(headers)}\n` : undefined;
+}
+function joinParagraphs(paras) {
+    return paras.length > 0 ? paras.join('\n\n') : undefined;
+}
+/**
+ * Remove the items matching `shouldRemove` from `coll` while keeping comments
+ * that belong to what survives. A removed item's leading comment is split by
+ * {@link splitComment}: headers move to the next surviving item, and the item's
+ * own paragraph moves only to a next surviving item with the same subject that
+ * has no own paragraph of its own; otherwise it is dropped. Headers left in a
+ * removed item's value (its trailing comment) are carried the same way, and a
+ * blank line before a removed item is kept before the next survivor. Returns
+ * the headers left over when no item survives after them.
+ */
+function removeItems(coll, shouldRemove, subjectOf) {
+    // yaml stores the first item's leading comment on the collection itself.
+    const firstComment = coll.commentBefore;
+    const kept = [];
+    let headers = [];
+    let pendingOwn = [];
+    let pendingSpace = false;
+    coll.items.forEach((item, index) => {
+        const holder = commentHolder(item);
+        const comment = index === 0 ? (firstComment ?? holder?.commentBefore) : holder?.commentBefore;
+        const split = splitComment(comment);
+        if (shouldRemove(item)) {
+            if (index === 0)
+                coll.commentBefore = undefined;
+            headers.push(...split.headers);
+            if (split.own !== undefined)
+                pendingOwn.push({ text: split.own, subject: subjectOf(item) });
+            const value = (0,dist/* isPair */.tO)(item) ? item.value : undefined;
+            if ((0,dist/* isMap */.jh)(value) || (0,dist/* isSeq */.oP)(value))
+                headers.push(...trailingParagraphs(value.comment));
+            if (holder?.spaceBefore || split.headers.length > 0)
+                pendingSpace = true;
+            return;
+        }
+        const subject = subjectOf(item);
+        const inherited = split.own === undefined && subject !== undefined
+            ? pendingOwn.filter((c) => c.subject === subject).map((c) => c.text)
+            : [];
+        const becameFirst = kept.length === 0 && index !== 0;
+        if (holder && (headers.length > 0 || inherited.length > 0 || becameFirst || pendingSpace)) {
+            if (index === 0)
+                coll.commentBefore = undefined;
+            const own = split.own ?? (inherited.length > 0 ? joinParagraphs(inherited) : undefined);
+            holder.commentBefore = buildComment([...headers, ...split.headers], own);
+            holder.spaceBefore = kept.length === 0 ? false : holder.spaceBefore || pendingSpace;
+        }
+        headers = [];
+        pendingOwn = [];
+        pendingSpace = false;
+        kept.push(item);
+    });
+    coll.items = kept;
+    return headers;
+}
+/** A trailing comment sits on no item, so all of its paragraphs are headers. */
+function trailingParagraphs(comment) {
+    const { headers, own } = splitComment(comment);
+    return own === undefined ? headers : [...headers, own];
+}
+function appendTrailing(coll, trailing) {
+    if (trailing.length > 0) {
+        coll.comment = joinParagraphs([...trailingParagraphs(coll.comment), ...trailing]);
+    }
 }
 function readNumberKey(doc, key) {
     const value = doc.get(key);
@@ -60005,7 +60125,7 @@ const overridesPruner = {
             await (0,promises_.writeFile)(lockfilePath, lockBackup, 'utf8');
         }
         if (toRemoveKeys.length > 0) {
-            removeFromMap(ctx.workspace.document, 'overrides', toRemoveKeys);
+            removeFromMap(ctx.workspace.document, 'overrides', toRemoveKeys, overrideTargetName);
             if (isCollectionEmpty(ctx.workspace.document, 'overrides')) {
                 removeKey(ctx.workspace.document, 'overrides');
             }
