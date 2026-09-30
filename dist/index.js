@@ -59876,180 +59876,6 @@ function stripVersionSuffix(version) {
 
 // EXTERNAL MODULE: ./node_modules/.pnpm/@actions+exec@1.1.1/node_modules/@actions/exec/lib/exec.js
 var exec = __nccwpck_require__(8872);
-;// CONCATENATED MODULE: ./src/lockfile/regenerate.ts
-
-
-
-/**
- * Re-run `pnpm install --lockfile-only` so that `pnpm-lock.yaml` reflects the
- * post-prune state of `pnpm-workspace.yaml`. Without this, consumers of the
- * resulting PR hit `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` on
- * `pnpm install --frozen-lockfile` because the `overrides` block recorded in
- * the lockfile no longer matches what the workspace file declares.
- *
- * Returns the absolute path of the (now-updated) lockfile, or null when there
- * is no lockfile to regenerate.
- */
-async function regeneratePnpmLockfile(cwd, logger) {
-    const lockfilePath = external_node_path_default().join(cwd, 'pnpm-lock.yaml');
-    try {
-        await (0,promises_.access)(lockfilePath);
-    }
-    catch {
-        logger.info('No pnpm-lock.yaml found — skipping lockfile regeneration.');
-        return null;
-    }
-    const exitCode = await (0,exec.exec)('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'], {
-        cwd,
-        ignoreReturnCode: true,
-    });
-    if (exitCode !== 0) {
-        throw new Error(`pnpm install --lockfile-only failed with exit code ${exitCode}. ` +
-            'The pnpm-workspace.yaml prune was rolled back to avoid committing a broken state.');
-    }
-    return lockfilePath;
-}
-
-;// CONCATENATED MODULE: ./src/util/format.ts
-/**
- * Format a duration in minutes as a short human-readable string.
- *
- * Examples: 30 -> "30m", 90 -> "1h 30m", 14_400 -> "10d", 14_500 -> "10d 1h".
- */
-function formatMinutes(totalMinutes) {
-    const minutes = Math.floor(totalMinutes);
-    if (minutes < 60)
-        return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    const remMin = minutes % 60;
-    if (hours < 24)
-        return remMin === 0 ? `${hours}h` : `${hours}h ${remMin}m`;
-    const days = Math.floor(hours / 24);
-    const remHours = hours % 24;
-    return remHours === 0 ? `${days}d` : `${days}d ${remHours}h`;
-}
-
-;// CONCATENATED MODULE: ./src/pruners/age-based.ts
-
-
-/**
- * Generic implementation for "remove entries whose resolved versions are
- * already past a release-age threshold" pruners. Used for both
- * `minimumReleaseAgeExclude` and `trustPolicyExclude`.
- */
-class AgeBasedPruner {
-    config;
-    constructor(config) {
-        this.config = config;
-    }
-    get name() {
-        return this.config.name;
-    }
-    async run(ctx) {
-        const removed = [];
-        const skipped = [];
-        if (!ctx.workspace) {
-            return { pruner: this.name, removed, skipped };
-        }
-        const threshold = this.thresholdFor(ctx);
-        if (threshold <= 0) {
-            ctx.logger.info(`${this.config.yamlKey}: skipped because ${this.config.thresholdKey} is not configured.`);
-            return { pruner: this.name, removed, skipped };
-        }
-        const entries = readSequenceKeys(ctx.workspace.document, this.config.yamlKey);
-        if (entries.length === 0) {
-            return { pruner: this.name, removed, skipped };
-        }
-        const toRemove = [];
-        for (const { value: pkg } of entries) {
-            const decision = await this.evaluateEntry(pkg, threshold, ctx);
-            if (decision.action === 'remove') {
-                toRemove.push(pkg);
-                removed.push({
-                    field: this.name,
-                    key: pkg,
-                    reason: decision.reason,
-                    file: ctx.workspace.filePath,
-                });
-            }
-            else {
-                skipped.push({ key: pkg, reason: decision.reason });
-            }
-        }
-        if (toRemove.length > 0) {
-            removeFromSequence(ctx.workspace.document, this.config.yamlKey, toRemove);
-            if (isCollectionEmpty(ctx.workspace.document, this.config.yamlKey)) {
-                removeKey(ctx.workspace.document, this.config.yamlKey);
-            }
-        }
-        return { pruner: this.name, removed, skipped };
-    }
-    thresholdFor(ctx) {
-        if (!ctx.workspace)
-            return 0;
-        return this.config.thresholdKey === 'minimumReleaseAge'
-            ? ctx.workspace.minimumReleaseAge
-            : ctx.workspace.trustPolicyIgnoreAfter;
-    }
-    async evaluateEntry(pkg, thresholdMinutes, ctx) {
-        const versions = ctx.lockfile?.resolvedVersions.get(pkg);
-        if (!versions || versions.size === 0) {
-            return {
-                action: 'remove',
-                reason: 'package is no longer referenced from pnpm-lock.yaml',
-            };
-        }
-        let newestPublish = null;
-        let newestVersion = null;
-        for (const v of versions) {
-            let publishedAt;
-            try {
-                publishedAt = await ctx.registry.publishTime(pkg, v);
-            }
-            catch (err) {
-                return {
-                    action: 'skip',
-                    reason: `failed to fetch publish time for ${pkg}@${v}: ${err.message}`,
-                };
-            }
-            if (!publishedAt) {
-                return {
-                    action: 'skip',
-                    reason: `npm registry has no publish time for ${pkg}@${v}`,
-                };
-            }
-            if (!newestPublish || publishedAt > newestPublish) {
-                newestPublish = publishedAt;
-                newestVersion = v;
-            }
-        }
-        if (!newestPublish || !newestVersion) {
-            return { action: 'skip', reason: 'no resolved versions could be checked' };
-        }
-        const ageMin = (ctx.now.getTime() - newestPublish.getTime()) / 60_000;
-        if (ageMin >= thresholdMinutes) {
-            return {
-                action: 'remove',
-                reason: `newest resolved version ${newestVersion} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
-            };
-        }
-        return {
-            action: 'skip',
-            reason: `newest resolved version ${newestVersion} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`,
-        };
-    }
-}
-const minimumReleaseAgeExcludePruner = new AgeBasedPruner({
-    name: 'minimumReleaseAgeExclude',
-    yamlKey: 'minimumReleaseAgeExclude',
-    thresholdKey: 'minimumReleaseAge',
-});
-const trustPolicyExcludePruner = new AgeBasedPruner({
-    name: 'trustPolicyExclude',
-    yamlKey: 'trustPolicyExclude',
-    thresholdKey: 'trustPolicyIgnoreAfter',
-});
-
 ;// CONCATENATED MODULE: ./src/pruners/overrides.ts
 
 
@@ -60276,6 +60102,224 @@ function violating(versions, key, range, baselineVersions) {
 async function restore(filePath, original) {
     await (0,promises_.writeFile)(filePath, original, 'utf8');
 }
+
+;// CONCATENATED MODULE: ./src/lockfile/regenerate.ts
+
+
+
+/**
+ * Re-run `pnpm install --lockfile-only` so that `pnpm-lock.yaml` reflects the
+ * post-prune state of `pnpm-workspace.yaml`. Without this, consumers of the
+ * resulting PR hit `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` on
+ * `pnpm install --frozen-lockfile` because the `overrides` block recorded in
+ * the lockfile no longer matches what the workspace file declares.
+ *
+ * Returns the absolute path of the (now-updated) lockfile, or null when there
+ * is no lockfile to regenerate.
+ */
+async function regeneratePnpmLockfile(cwd, logger) {
+    const lockfilePath = external_node_path_default().join(cwd, 'pnpm-lock.yaml');
+    try {
+        await (0,promises_.access)(lockfilePath);
+    }
+    catch {
+        logger.info('No pnpm-lock.yaml found — skipping lockfile regeneration.');
+        return null;
+    }
+    const exitCode = await (0,exec.exec)('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--no-frozen-lockfile'], {
+        cwd,
+        ignoreReturnCode: true,
+    });
+    if (exitCode !== 0) {
+        throw new Error(`pnpm install --lockfile-only failed with exit code ${exitCode}. ` +
+            'The pruned files do not resolve, so no pull request was created.');
+    }
+    return lockfilePath;
+}
+
+;// CONCATENATED MODULE: ./src/lockfile/verify.ts
+
+
+
+
+/**
+ * Regenerate `pnpm-lock.yaml` for the pruned files on disk and re-check every
+ * removed override against it. `baseline` is the lockfile from before any
+ * pruning. Throws when the lockfile cannot be regenerated or a removed
+ * override no longer holds; returns the lockfile path, or null when the
+ * project has no lockfile.
+ */
+async function regenerateAndVerify(cwd, reports, baseline, logger) {
+    const regenerated = await regeneratePnpmLockfile(cwd, logger);
+    if (!regenerated)
+        return null;
+    // The overrides pruner verified its removals before the other pruners'
+    // edits were written, so re-check them against the lockfile actually
+    // produced. The resulting PR is made with GITHUB_TOKEN and gets no CI.
+    const finalLockfile = await loadPnpmLockfile(cwd);
+    if (finalLockfile) {
+        const removedOverrides = reports.flatMap((r) => (r.pruner === 'overrides' ? r.removed : []));
+        const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides, baseline);
+        if (regressions.length > 0) {
+            throw new Error(`Regenerated pnpm-lock.yaml no longer satisfies removed overrides: ${regressions.join('; ')}`);
+        }
+    }
+    return regenerated;
+}
+/**
+ * Run `fn`, then write `filePaths` back to their contents from before the call,
+ * whether `fn` succeeds or throws. Every path must exist when called.
+ */
+async function withFilesRestored(filePaths, fn) {
+    const originals = await Promise.all(filePaths.map(async (p) => [p, await (0,promises_.readFile)(p, 'utf8')]));
+    try {
+        return await fn();
+    }
+    finally {
+        // allSettled so one failed write neither skips the rest nor masks fn's error.
+        await Promise.allSettled(originals.map(([p, content]) => (0,promises_.writeFile)(p, content, 'utf8')));
+    }
+}
+
+;// CONCATENATED MODULE: ./src/util/format.ts
+/**
+ * Format a duration in minutes as a short human-readable string.
+ *
+ * Examples: 30 -> "30m", 90 -> "1h 30m", 14_400 -> "10d", 14_500 -> "10d 1h".
+ */
+function formatMinutes(totalMinutes) {
+    const minutes = Math.floor(totalMinutes);
+    if (minutes < 60)
+        return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remMin = minutes % 60;
+    if (hours < 24)
+        return remMin === 0 ? `${hours}h` : `${hours}h ${remMin}m`;
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    return remHours === 0 ? `${days}d` : `${days}d ${remHours}h`;
+}
+
+;// CONCATENATED MODULE: ./src/pruners/age-based.ts
+
+
+/**
+ * Generic implementation for "remove entries whose resolved versions are
+ * already past a release-age threshold" pruners. Used for both
+ * `minimumReleaseAgeExclude` and `trustPolicyExclude`.
+ */
+class AgeBasedPruner {
+    config;
+    constructor(config) {
+        this.config = config;
+    }
+    get name() {
+        return this.config.name;
+    }
+    async run(ctx) {
+        const removed = [];
+        const skipped = [];
+        if (!ctx.workspace) {
+            return { pruner: this.name, removed, skipped };
+        }
+        const threshold = this.thresholdFor(ctx);
+        if (threshold <= 0) {
+            ctx.logger.info(`${this.config.yamlKey}: skipped because ${this.config.thresholdKey} is not configured.`);
+            return { pruner: this.name, removed, skipped };
+        }
+        const entries = readSequenceKeys(ctx.workspace.document, this.config.yamlKey);
+        if (entries.length === 0) {
+            return { pruner: this.name, removed, skipped };
+        }
+        const toRemove = [];
+        for (const { value: pkg } of entries) {
+            const decision = await this.evaluateEntry(pkg, threshold, ctx);
+            if (decision.action === 'remove') {
+                toRemove.push(pkg);
+                removed.push({
+                    field: this.name,
+                    key: pkg,
+                    reason: decision.reason,
+                    file: ctx.workspace.filePath,
+                });
+            }
+            else {
+                skipped.push({ key: pkg, reason: decision.reason });
+            }
+        }
+        if (toRemove.length > 0) {
+            removeFromSequence(ctx.workspace.document, this.config.yamlKey, toRemove);
+            if (isCollectionEmpty(ctx.workspace.document, this.config.yamlKey)) {
+                removeKey(ctx.workspace.document, this.config.yamlKey);
+            }
+        }
+        return { pruner: this.name, removed, skipped };
+    }
+    thresholdFor(ctx) {
+        if (!ctx.workspace)
+            return 0;
+        return this.config.thresholdKey === 'minimumReleaseAge'
+            ? ctx.workspace.minimumReleaseAge
+            : ctx.workspace.trustPolicyIgnoreAfter;
+    }
+    async evaluateEntry(pkg, thresholdMinutes, ctx) {
+        const versions = ctx.lockfile?.resolvedVersions.get(pkg);
+        if (!versions || versions.size === 0) {
+            return {
+                action: 'remove',
+                reason: 'package is no longer referenced from pnpm-lock.yaml',
+            };
+        }
+        let newestPublish = null;
+        let newestVersion = null;
+        for (const v of versions) {
+            let publishedAt;
+            try {
+                publishedAt = await ctx.registry.publishTime(pkg, v);
+            }
+            catch (err) {
+                return {
+                    action: 'skip',
+                    reason: `failed to fetch publish time for ${pkg}@${v}: ${err.message}`,
+                };
+            }
+            if (!publishedAt) {
+                return {
+                    action: 'skip',
+                    reason: `npm registry has no publish time for ${pkg}@${v}`,
+                };
+            }
+            if (!newestPublish || publishedAt > newestPublish) {
+                newestPublish = publishedAt;
+                newestVersion = v;
+            }
+        }
+        if (!newestPublish || !newestVersion) {
+            return { action: 'skip', reason: 'no resolved versions could be checked' };
+        }
+        const ageMin = (ctx.now.getTime() - newestPublish.getTime()) / 60_000;
+        if (ageMin >= thresholdMinutes) {
+            return {
+                action: 'remove',
+                reason: `newest resolved version ${newestVersion} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
+            };
+        }
+        return {
+            action: 'skip',
+            reason: `newest resolved version ${newestVersion} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`,
+        };
+    }
+}
+const minimumReleaseAgeExcludePruner = new AgeBasedPruner({
+    name: 'minimumReleaseAgeExclude',
+    yamlKey: 'minimumReleaseAgeExclude',
+    thresholdKey: 'minimumReleaseAge',
+});
+const trustPolicyExcludePruner = new AgeBasedPruner({
+    name: 'trustPolicyExclude',
+    yamlKey: 'trustPolicyExclude',
+    thresholdKey: 'trustPolicyIgnoreAfter',
+});
 
 ;// CONCATENATED MODULE: ./src/pruners/only-built-dependencies.ts
 
@@ -60658,22 +60702,22 @@ async function run() {
         logger.info('No stale entries found. Nothing to commit.');
         return;
     }
-    if (!inputs.dryRun && packageManager === 'pnpm' && ctx.lockfile) {
-        const regenerated = await logger.group('Regenerate pnpm-lock.yaml', async () => {
-            return regeneratePnpmLockfile(cwd, logger);
-        });
-        if (regenerated && !changedFiles.includes(regenerated)) {
-            changedFiles.push(regenerated);
+    if (packageManager === 'pnpm' && ctx.lockfile) {
+        const lockfilePath = ctx.lockfile.filePath;
+        const verify = () => logger.group('Regenerate pnpm-lock.yaml', () => regenerateAndVerify(cwd, reports, ctx.lockfile, logger));
+        if (inputs.dryRun) {
+            // dry-run must leave the tree untouched, so the pruned files exist only
+            // while the lockfile is regenerated and checked against them.
+            const touched = [ctx.workspace?.filePath, ctx.packageJson?.filePath, ctx.npmrc?.filePath];
+            await withFilesRestored([lockfilePath, ...touched.filter((p) => p !== undefined)], async () => {
+                await persistChanges(ctx, reports, false, logger);
+                await verify();
+            });
         }
-        // The overrides pruner verified its removals before the other pruners'
-        // edits were written, so re-check them against the lockfile actually
-        // being committed. The resulting PR is made with GITHUB_TOKEN and gets no CI.
-        const finalLockfile = regenerated ? await loadPnpmLockfile(cwd) : null;
-        if (finalLockfile) {
-            const removedOverrides = reports.flatMap((r) => (r.pruner === 'overrides' ? r.removed : []));
-            const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides, ctx.lockfile);
-            if (regressions.length > 0) {
-                throw new Error(`Regenerated pnpm-lock.yaml no longer satisfies removed overrides: ${regressions.join('; ')}`);
+        else {
+            const regenerated = await verify();
+            if (regenerated && !changedFiles.includes(regenerated)) {
+                changedFiles.push(regenerated);
             }
         }
     }

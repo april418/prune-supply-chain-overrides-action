@@ -35,7 +35,7 @@ export async function regeneratePnpmLockfile(
   if (exitCode !== 0) {
     throw new Error(
       `pnpm install --lockfile-only failed with exit code ${exitCode}. ` +
-        'The pnpm-workspace.yaml prune was rolled back to avoid committing a broken state.',
+        'The pruned files do not resolve, so no pull request was created.',
     );
   }
   return lockfilePath;
