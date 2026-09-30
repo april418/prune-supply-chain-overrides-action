@@ -60639,11 +60639,11 @@ function overrideTargetName(key) {
     return parseOverrideKey(key).name;
 }
 /**
- * Remove `overrides` entries whose pin is no longer load-bearing — i.e. no
- * version of the target that the override would rewrite (one matching its
- * selector but not its range) remains in the natural resolution without the
- * override. Verified by running `pnpm install --lockfile-only` against a backup
- * copy of pnpm-workspace.yaml / pnpm-lock.yaml.
+ * Remove `overrides` entries whose pin is no longer load-bearing — i.e. the
+ * natural resolution without the override has no version of the target that
+ * violates it (see {@link violating}). Verified by running
+ * `pnpm install --lockfile-only` against a backup copy of pnpm-workspace.yaml /
+ * pnpm-lock.yaml.
  *
  * Removals are evaluated cumulatively: each candidate is tried on top of the
  * removals already accepted, and every accepted override is re-checked against
@@ -60675,12 +60675,13 @@ const overridesPruner = {
             ctx.logger.warn('overrides pruner: pnpm-lock.yaml is missing — skipping (a lockfile is required to verify resolution).');
             return { pruner: 'overrides', removed, skipped };
         }
+        const baseline = await loadPnpmLockfile(ctx.cwd);
         const toRemoveKeys = [];
         let wsAccepted = wsBackup;
         let lockAccepted = lockBackup;
         try {
             for (const { key, value: range } of entries) {
-                const decision = await evaluateOverride(ctx, key, range, removed);
+                const decision = await evaluateOverride(ctx, key, range, removed, baseline);
                 if (decision.action === 'remove') {
                     toRemoveKeys.push(key);
                     removed.push({
@@ -60713,7 +60714,7 @@ const overridesPruner = {
         return { pruner: 'overrides', removed, skipped };
     },
 };
-async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved) {
+async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved, baseline) {
     if (!ctx.workspace)
         return { action: 'skip', reason: 'no pnpm-workspace.yaml' };
     const wsSource = await (0,promises_.readFile)(ctx.workspace.filePath, 'utf8');
@@ -60755,14 +60756,14 @@ async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved) {
     if (!newLockfile) {
         return { action: 'skip', reason: 'lockfile disappeared after simulation' };
     }
-    const regressions = findUnsatisfiedOverrides(newLockfile, alreadyRemoved);
+    const regressions = findUnsatisfiedOverrides(newLockfile, alreadyRemoved, baseline);
     if (regressions.length > 0) {
         return {
             action: 'skip',
             reason: `removing the override would also undo an already-removed override: ${regressions.join('; ')}`,
         };
     }
-    const { name: targetName, selector } = parseOverrideKey(overrideKey);
+    const targetName = overrideTargetName(overrideKey);
     const versions = newLockfile.resolvedVersions.get(targetName);
     if (!versions || versions.size === 0) {
         return {
@@ -60770,12 +60771,13 @@ async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved) {
             reason: `${targetName} is no longer pulled into the dependency graph after removing the override`,
         };
     }
-    const violators = violating(versions, overrideKey, range);
+    const violators = violating(versions, overrideKey, range, baseline?.resolvedVersions.get(targetName));
     if (violators.length === 0) {
         const resolved = [...versions].join(', ');
+        const selector = selectorScope(overrideKey);
         return {
             action: 'remove',
-            reason: selector && semver_default().validRange(selector)
+            reason: selector
                 ? `natural resolution (${resolved}) has no version matching "${selector}" outside "${range}"`
                 : `natural resolution (${resolved}) already satisfies "${range}"`,
         };
@@ -60787,10 +60789,12 @@ async function evaluateOverride(ctx, overrideKey, range, alreadyRemoved) {
 }
 /**
  * Check removed overrides against a lockfile. Returns one message per removed
- * override whose target now resolves to a version it would have rewritten
- * (see {@link violating}); an empty array means every removal still holds.
+ * override whose target now resolves to a violating version (see
+ * {@link violating}); an empty array means every removal still holds.
+ * `baseline` is the lockfile from before any override was removed; without it
+ * every resolved version is checked against the override's range.
  */
-function findUnsatisfiedOverrides(lockfile, removedOverrides) {
+function findUnsatisfiedOverrides(lockfile, removedOverrides, baseline) {
     const out = [];
     for (const { key, value: range } of removedOverrides) {
         if (range === undefined)
@@ -60799,27 +60803,33 @@ function findUnsatisfiedOverrides(lockfile, removedOverrides) {
         const versions = lockfile.resolvedVersions.get(name);
         if (!versions)
             continue;
-        const violators = violating(versions, key, range);
+        const violators = violating(versions, key, range, baseline?.resolvedVersions.get(name));
         if (violators.length > 0) {
             out.push(`${key} (${name} ${violators.join(', ')} does not satisfy "${range}")`);
         }
     }
     return out;
 }
-/**
- * Versions the override would rewrite: those matching its selector but not
- * its range. Versions outside the selector are never touched by the override,
- * so an override per major series (`foo@<1.2.0`, `foo@>=2.0.0 <2.3.0`) is not
- * held in place by the other series. A missing or non-semver selector matches
- * every version.
- */
-function violating(versions, key, range) {
+/** The key's selector when it is a semver range, otherwise undefined. */
+function selectorScope(key) {
     const { selector } = parseOverrideKey(key);
-    const scope = selector && semver_default().validRange(selector) ? selector : '*';
+    return selector && semver_default().validRange(selector) ? selector : undefined;
+}
+/**
+ * Resolved versions that removing the override would let through: those not
+ * satisfying its range, except versions outside its selector that were already
+ * resolved before any removal (`baselineVersions`). pnpm applies an override
+ * when the declared range intersects the selector, so a range such as
+ * `>=1.0.0` can jump past a `<1.1.13` selector once the override is gone; only
+ * pre-existing out-of-selector versions (e.g. the other majors in a
+ * per-series set of overrides) are known not to be held back by it.
+ */
+function violating(versions, key, range, baselineVersions) {
+    const scope = selectorScope(key) ?? '*';
     // includePrerelease widens the scope only, so a prerelease is never exempted.
     return [...versions].filter((v) => semver_default().valid(v) &&
-        semver_default().satisfies(v, scope, { includePrerelease: true }) &&
-        !semver_default().satisfies(v, range));
+        !semver_default().satisfies(v, range) &&
+        (semver_default().satisfies(v, scope, { includePrerelease: true }) || !baselineVersions?.has(v)));
 }
 async function restore(filePath, original) {
     await (0,promises_.writeFile)(filePath, original, 'utf8');
@@ -61219,7 +61229,7 @@ async function run() {
         const finalLockfile = regenerated ? await loadPnpmLockfile(cwd) : null;
         if (finalLockfile) {
             const removedOverrides = reports.flatMap((r) => (r.pruner === 'overrides' ? r.removed : []));
-            const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides);
+            const regressions = findUnsatisfiedOverrides(finalLockfile, removedOverrides, ctx.lockfile);
             if (regressions.length > 0) {
                 throw new Error(`Regenerated pnpm-lock.yaml no longer satisfies removed overrides: ${regressions.join('; ')}`);
             }
