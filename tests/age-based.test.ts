@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { minimumReleaseAgeExcludePruner } from '../src/pruners/age-based.js';
+import { minimumReleaseAgeExcludePruner, trustPolicyExcludePruner } from '../src/pruners/age-based.js';
 import { loadPnpmWorkspace } from '../src/files/pnpm-workspace.js';
 import { NpmRegistry } from '../src/registry/npm-registry.js';
 import { consoleLogger } from '../src/util/logger.js';
@@ -110,5 +110,148 @@ describe('minimumReleaseAgeExclude pruner', () => {
     const report = await minimumReleaseAgeExcludePruner.run(ctx);
     expect(report.removed).toHaveLength(0);
     expect(report.skipped).toHaveLength(1);
+  });
+
+  it('keeps a name pattern while any package it matches is younger than the threshold', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@next/*'\n",
+      lockfile: new Map([
+        ['@next/env', new Set(['16.4.1'])],
+        ['@next/swc-linux-x64-gnu', new Set(['16.4.1'])],
+        ['next', new Set(['16.4.1'])],
+      ]),
+      times: {
+        '@next/env': { '16.4.1': '2026-04-01T00:00:00Z' },
+        '@next/swc-linux-x64-gnu': { '16.4.1': '2026-05-15T00:00:00Z' },
+      },
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+    expect(report.removed).toHaveLength(0);
+    expect(report.skipped).toEqual([
+      { key: '@next/*', reason: 'newest resolved version @next/swc-linux-x64-gnu@16.4.1 is only 1d old (< 7d)' },
+    ]);
+  });
+
+  it('removes a name pattern once every package it matches is past the threshold', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@next/*'\n",
+      lockfile: new Map([['@next/env', new Set(['16.4.1'])]]),
+      times: { '@next/env': { '16.4.1': '2026-04-01T00:00:00Z' } },
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+    expect(report.removed.map((e) => e.key)).toEqual(['@next/*']);
+  });
+
+  it('keeps a name pattern when the publish time of any matched package is unknown', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@next/*'\n",
+      lockfile: new Map([
+        ['@next/env', new Set(['16.4.1'])],
+        ['@next/third-parties', new Set(['16.4.1'])],
+      ]),
+      times: { '@next/env': { '16.4.1': '2026-04-01T00:00:00Z' } },
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+    expect(report.removed).toHaveLength(0);
+    expect(report.skipped.map((e) => e.key)).toEqual(['@next/*']);
+  });
+
+  it('ignores workspace links and other non-registry versions', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@myorg/*'\n",
+      lockfile: new Map([
+        ['@myorg/ui', new Set(['link:packages/ui'])],
+        ['@myorg/utils', new Set(['1.0.0'])],
+      ]),
+      times: { '@myorg/utils': { '1.0.0': '2026-04-01T00:00:00Z' } },
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+    expect(report.removed.map((e) => e.key)).toEqual(['@myorg/*']);
+  });
+
+  it('removes a name pattern that matches nothing in the lockfile', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@next/*'\n",
+      lockfile: new Map([['next', new Set(['16.4.1'])]]),
+      times: {},
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+    expect(report.removed).toEqual([
+      expect.objectContaining({
+        key: '@next/*',
+        reason: 'no package matching the pattern is referenced from pnpm-lock.yaml',
+      }),
+    ]);
+  });
+
+  it('judges a versioned entry by the listed versions only', async () => {
+    const yaml = "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - 'webpack@4.47.0 || 5.102.1'\n";
+    const times = {
+      webpack: {
+        '4.47.0': '2026-01-01T00:00:00Z',
+        '5.102.1': '2026-05-15T00:00:00Z',
+        '5.103.0': '2026-05-15T12:00:00Z',
+      },
+    };
+    const now = new Date('2026-05-16T00:00:00Z');
+
+    const young = await setupCtx({
+      workspaceYaml: yaml,
+      lockfile: new Map([['webpack', new Set(['5.102.1'])]]),
+      times,
+      now,
+    });
+    expect((await minimumReleaseAgeExcludePruner.run(young)).removed).toHaveLength(0);
+
+    const old = await setupCtx({
+      workspaceYaml: yaml,
+      lockfile: new Map([['webpack', new Set(['4.47.0', '5.103.0'])]]),
+      times,
+      now,
+    });
+    expect((await minimumReleaseAgeExcludePruner.run(old)).removed.map((e) => e.key)).toEqual([
+      'webpack@4.47.0 || 5.102.1',
+    ]);
+
+    const gone = await setupCtx({
+      workspaceYaml: yaml,
+      lockfile: new Map([['webpack', new Set(['5.103.0'])]]),
+      times,
+      now,
+    });
+    expect((await minimumReleaseAgeExcludePruner.run(gone)).removed).toEqual([
+      expect.objectContaining({ reason: 'none of the listed versions is resolved in pnpm-lock.yaml' }),
+    ]);
+  });
+
+  it('keeps entries it cannot judge', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '!next'\n  - 'webpack@^5.0.0'\n",
+      lockfile: new Map(),
+      times: {},
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+    expect(report.removed).toHaveLength(0);
+    expect(report.skipped.map((e) => e.key)).toEqual(['!next', 'webpack@^5.0.0']);
+  });
+});
+
+describe('trustPolicyExclude pruner', () => {
+  it('reads name patterns the same way', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "trustPolicyIgnoreAfter: 10080\ntrustPolicyExclude:\n  - '@next/*'\n",
+      lockfile: new Map([['@next/env', new Set(['16.4.1'])]]),
+      times: { '@next/env': { '16.4.1': '2026-05-15T00:00:00Z' } },
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const report = await trustPolicyExcludePruner.run(ctx);
+    expect(report.removed).toHaveLength(0);
+    expect(report.skipped.map((e) => e.key)).toEqual(['@next/*']);
   });
 });
