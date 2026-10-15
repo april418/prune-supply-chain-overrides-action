@@ -60977,7 +60977,46 @@ function formatMinutes(totalMinutes) {
     return remHours === 0 ? `${days}d` : `${days}d ${remHours}h`;
 }
 
+;// CONCATENATED MODULE: ./src/pruners/exclude-entry.ts
+
+/**
+ * Parses `name`, a name with `*` wildcards (`@scope/*`), or
+ * `name@1.2.3 || 1.2.4`. Returns null for what pnpm rejects (a wildcard
+ * combined with versions, a non-exact version) and for `!name`, which pnpm
+ * treats as "every package except name" and cannot be judged by age.
+ */
+function parseExcludeEntry(entry) {
+    if (entry.startsWith('!'))
+        return null;
+    const at = entry.startsWith('@') ? entry.indexOf('@', 1) : entry.indexOf('@');
+    if (at === -1) {
+        return { matches: nameMatcher(entry), versions: [], isPattern: entry.includes('*') };
+    }
+    const name = entry.slice(0, at);
+    if (name.includes('*'))
+        return null;
+    const versions = [];
+    for (const raw of entry.slice(at + 1).split('||')) {
+        const version = semver_default().valid(raw);
+        if (version === null)
+            return null;
+        versions.push(version);
+    }
+    return { matches: nameMatcher(name), versions, isPattern: false };
+}
+function nameMatcher(pattern) {
+    if (!pattern.includes('*'))
+        return (name) => name === pattern;
+    const regexp = new RegExp(`^${pattern.split('*').map(escapeRegExp).join('.*')}$`);
+    return (name) => regexp.test(name);
+}
+function escapeRegExp(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 ;// CONCATENATED MODULE: ./src/pruners/age-based.ts
+
+
 
 
 /**
@@ -61039,51 +61078,72 @@ class AgeBasedPruner {
             ? ctx.workspace.minimumReleaseAge
             : ctx.workspace.trustPolicyIgnoreAfter;
     }
-    async evaluateEntry(pkg, thresholdMinutes, ctx) {
-        const versions = ctx.lockfile?.resolvedVersions.get(pkg);
-        if (!versions || versions.size === 0) {
+    async evaluateEntry(entry, thresholdMinutes, ctx) {
+        const parsed = parseExcludeEntry(entry);
+        if (!parsed) {
             return {
-                action: 'remove',
-                reason: 'package is no longer referenced from pnpm-lock.yaml',
+                action: 'skip',
+                reason: 'not a package name, name pattern, or name@exact-versions entry that can be checked',
             };
         }
-        let newestPublish = null;
-        let newestVersion = null;
-        for (const v of versions) {
+        const resolved = [];
+        for (const [name, versions] of ctx.lockfile?.resolvedVersions ?? []) {
+            if (!parsed.matches(name))
+                continue;
+            for (const version of versions) {
+                // pnpm checks only registry versions against the policy; `link:` and
+                // alias entries have no publish time and would never let the entry go.
+                if (semver_default().valid(version) === null)
+                    continue;
+                if (parsed.versions.length === 0 || parsed.versions.includes(version)) {
+                    resolved.push({ name, version });
+                }
+            }
+        }
+        if (resolved.length === 0) {
+            let reason = 'package is no longer referenced from pnpm-lock.yaml';
+            if (parsed.isPattern)
+                reason = 'no package matching the pattern is referenced from pnpm-lock.yaml';
+            if (parsed.versions.length > 0)
+                reason = 'none of the listed versions is resolved in pnpm-lock.yaml';
+            return { action: 'remove', reason };
+        }
+        let newest = null;
+        for (const { name, version } of resolved) {
             let publishedAt;
             try {
-                publishedAt = await ctx.registry.publishTime(pkg, v);
+                publishedAt = await ctx.registry.publishTime(name, version);
             }
             catch (err) {
                 return {
                     action: 'skip',
-                    reason: `failed to fetch publish time for ${pkg}@${v}: ${err.message}`,
+                    reason: `failed to fetch publish time for ${name}@${version}: ${err.message}`,
                 };
             }
             if (!publishedAt) {
                 return {
                     action: 'skip',
-                    reason: `npm registry has no publish time for ${pkg}@${v}`,
+                    reason: `npm registry has no publish time for ${name}@${version}`,
                 };
             }
-            if (!newestPublish || publishedAt > newestPublish) {
-                newestPublish = publishedAt;
-                newestVersion = v;
+            if (!newest || publishedAt > newest.publishedAt) {
+                newest = { name, version, publishedAt };
             }
         }
-        if (!newestPublish || !newestVersion) {
+        if (!newest) {
             return { action: 'skip', reason: 'no resolved versions could be checked' };
         }
-        const ageMin = (ctx.now.getTime() - newestPublish.getTime()) / 60_000;
+        const label = parsed.isPattern ? `${newest.name}@${newest.version}` : newest.version;
+        const ageMin = (ctx.now.getTime() - newest.publishedAt.getTime()) / 60_000;
         if (ageMin >= thresholdMinutes) {
             return {
                 action: 'remove',
-                reason: `newest resolved version ${newestVersion} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
+                reason: `newest resolved version ${label} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
             };
         }
         return {
             action: 'skip',
-            reason: `newest resolved version ${newestVersion} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`,
+            reason: `newest resolved version ${label} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`,
         };
     }
 }

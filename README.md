@@ -18,8 +18,8 @@ remove, and opens a pull request for review.
 
 | Field | When it is removed |
 | --- | --- |
-| `minimumReleaseAgeExclude` (pnpm) | The most recently published version of the package that is resolved in `pnpm-lock.yaml` is at least `minimumReleaseAge` minutes old. |
-| `trustPolicyExclude` (pnpm) | The most recently published resolved version is at least `trustPolicyIgnoreAfter` minutes old. |
+| `minimumReleaseAgeExclude` (pnpm) | The most recently published version that the entry covers (a package, a name pattern such as `@scope/*`, or listed versions) and that is resolved in `pnpm-lock.yaml` is at least `minimumReleaseAge` minutes old. |
+| `trustPolicyExclude` (pnpm) | The most recently published resolved version that the entry covers (same entry syntax as `minimumReleaseAgeExclude`) is at least `trustPolicyIgnoreAfter` minutes old. |
 | `overrides` (pnpm `pnpm-workspace.yaml`, npm `package.json`) | Removing the override and re-resolving the lockfile (`pnpm install --lockfile-only` / `npm install --package-lock-only`) produces a lockfile in which every resolved version of the target package still satisfies the override's range, apart from versions outside the override's selector that were already resolved before. |
 | `onlyBuiltDependencies` (pnpm) | The package is no longer in the dependency graph, or its currently-resolved version does not declare `preinstall` / `install` / `postinstall` scripts. |
 
@@ -199,12 +199,27 @@ is no longer load-bearing — removing the entry does not change which version
 pnpm will install. The action keeps the entry only when at least one
 currently-resolved version is younger than the threshold.
 
+Entries are read the way pnpm reads them:
+
+- `next` covers every resolved version of `next`.
+- `'@next/*'` covers every resolved package whose name matches the pattern.
+  `*` matches any run of characters, `/` included, so `'@next*'` also covers
+  `@next/env`. The entry is kept while any of them is young.
+- `'webpack@4.47.0 || 5.102.1'` covers only the listed versions. The entry is
+  removed once none of them is resolved any more, or every one that is still
+  resolved is old.
+- Only registry versions count; workspace links and other non-registry entries
+  in the lockfile are ignored, as pnpm does. An entry that covers nothing in
+  the lockfile is removed. Entries that pnpm rejects, and negations such as
+  `'!next'`, are kept and reported as skipped.
+
 ### `trustPolicyExclude`
 
 `trustPolicy: no-downgrade` errors when a package's trust level drops compared
 to previous releases. `trustPolicyIgnoreAfter` relaxes the rule for legacy
-packages older than the threshold. The pruner uses the same age check as
-`minimumReleaseAgeExclude` against `trustPolicyIgnoreAfter`.
+packages older than the threshold. The pruner uses the same age check and the
+same entry syntax as `minimumReleaseAgeExclude`, against
+`trustPolicyIgnoreAfter`.
 
 ### `overrides`
 

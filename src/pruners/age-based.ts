@@ -1,3 +1,4 @@
+import semver from 'semver';
 import type { Pruner, PrunerContext } from './types.js';
 import type { PrunedEntry, PrunerName, PrunerReport } from '../types.js';
 import {
@@ -7,6 +8,7 @@ import {
   removeKey,
 } from '../files/pnpm-workspace.js';
 import { formatMinutes } from '../util/format.js';
+import { parseExcludeEntry } from './exclude-entry.js';
 
 interface AgeBasedConfig {
   name: PrunerName;
@@ -81,55 +83,73 @@ class AgeBasedPruner implements Pruner {
   }
 
   private async evaluateEntry(
-    pkg: string,
+    entry: string,
     thresholdMinutes: number,
     ctx: PrunerContext,
   ): Promise<{ action: 'remove'; reason: string } | { action: 'skip'; reason: string }> {
-    const versions = ctx.lockfile?.resolvedVersions.get(pkg);
-    if (!versions || versions.size === 0) {
+    const parsed = parseExcludeEntry(entry);
+    if (!parsed) {
       return {
-        action: 'remove',
-        reason: 'package is no longer referenced from pnpm-lock.yaml',
+        action: 'skip',
+        reason: 'not a package name, name pattern, or name@exact-versions entry that can be checked',
       };
     }
 
-    let newestPublish: Date | null = null;
-    let newestVersion: string | null = null;
-    for (const v of versions) {
+    const resolved: Array<{ name: string; version: string }> = [];
+    for (const [name, versions] of ctx.lockfile?.resolvedVersions ?? []) {
+      if (!parsed.matches(name)) continue;
+      for (const version of versions) {
+        // pnpm checks only registry versions against the policy; `link:` and
+        // alias entries have no publish time and would never let the entry go.
+        if (semver.valid(version) === null) continue;
+        if (parsed.versions.length === 0 || parsed.versions.includes(version)) {
+          resolved.push({ name, version });
+        }
+      }
+    }
+    if (resolved.length === 0) {
+      let reason = 'package is no longer referenced from pnpm-lock.yaml';
+      if (parsed.isPattern) reason = 'no package matching the pattern is referenced from pnpm-lock.yaml';
+      if (parsed.versions.length > 0) reason = 'none of the listed versions is resolved in pnpm-lock.yaml';
+      return { action: 'remove', reason };
+    }
+
+    let newest: { name: string; version: string; publishedAt: Date } | null = null;
+    for (const { name, version } of resolved) {
       let publishedAt: Date | null;
       try {
-        publishedAt = await ctx.registry.publishTime(pkg, v);
+        publishedAt = await ctx.registry.publishTime(name, version);
       } catch (err) {
         return {
           action: 'skip',
-          reason: `failed to fetch publish time for ${pkg}@${v}: ${(err as Error).message}`,
+          reason: `failed to fetch publish time for ${name}@${version}: ${(err as Error).message}`,
         };
       }
       if (!publishedAt) {
         return {
           action: 'skip',
-          reason: `npm registry has no publish time for ${pkg}@${v}`,
+          reason: `npm registry has no publish time for ${name}@${version}`,
         };
       }
-      if (!newestPublish || publishedAt > newestPublish) {
-        newestPublish = publishedAt;
-        newestVersion = v;
+      if (!newest || publishedAt > newest.publishedAt) {
+        newest = { name, version, publishedAt };
       }
     }
-    if (!newestPublish || !newestVersion) {
+    if (!newest) {
       return { action: 'skip', reason: 'no resolved versions could be checked' };
     }
 
-    const ageMin = (ctx.now.getTime() - newestPublish.getTime()) / 60_000;
+    const label = parsed.isPattern ? `${newest.name}@${newest.version}` : newest.version;
+    const ageMin = (ctx.now.getTime() - newest.publishedAt.getTime()) / 60_000;
     if (ageMin >= thresholdMinutes) {
       return {
         action: 'remove',
-        reason: `newest resolved version ${newestVersion} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
+        reason: `newest resolved version ${label} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
       };
     }
     return {
       action: 'skip',
-      reason: `newest resolved version ${newestVersion} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`,
+      reason: `newest resolved version ${label} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`,
     };
   }
 }
