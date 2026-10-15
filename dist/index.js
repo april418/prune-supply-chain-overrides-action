@@ -61235,7 +61235,12 @@ async function createPullRequest(opts) {
         logger.info(`Branch ${branch} already has these changes; skipping push.`);
     }
     else {
-        await (0,exec.exec)('git', ['push', `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`, remoteUrl, `${branch}:${branch}`], { cwd, silent: true });
+        // silent keeps the token-bearing URL out of the log, which also hides
+        // git's stderr, so it is surfaced through the thrown error instead.
+        const pushed = await (0,exec.getExecOutput)('git', ['push', `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`, remoteUrl, `${branch}:${branch}`], { cwd, silent: true, ignoreReturnCode: true });
+        if (pushed.exitCode !== 0) {
+            throw new Error(`git push to ${branch} failed (exit ${pushed.exitCode}): ${redact(pushed.stderr, opts.token).trim()}`);
+        }
     }
     const existing = await octokit.rest.pulls.list({
         owner,
@@ -61314,6 +61319,9 @@ async function closeSupersededPullRequests(octokit, branch, currentPrNumber, log
             logger.warn(`Failed to close superseded PR #${stale.number}: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
+}
+function redact(text, secret) {
+    return secret ? text.split(secret).join('***') : text;
 }
 function renderBody(reports, header) {
     const lines = [];

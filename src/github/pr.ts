@@ -73,11 +73,18 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
   if (remote && remote.tree === localTree) {
     logger.info(`Branch ${branch} already has these changes; skipping push.`);
   } else {
-    await exec(
+    // silent keeps the token-bearing URL out of the log, which also hides
+    // git's stderr, so it is surfaced through the thrown error instead.
+    const pushed = await getExecOutput(
       'git',
       ['push', `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`, remoteUrl, `${branch}:${branch}`],
-      { cwd, silent: true },
+      { cwd, silent: true, ignoreReturnCode: true },
     );
+    if (pushed.exitCode !== 0) {
+      throw new Error(
+        `git push to ${branch} failed (exit ${pushed.exitCode}): ${redact(pushed.stderr, opts.token).trim()}`,
+      );
+    }
   }
 
   const existing = await octokit.rest.pulls.list({
@@ -168,6 +175,10 @@ async function closeSupersededPullRequests(
       logger.warn(`Failed to close superseded PR #${stale.number}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+}
+
+function redact(text: string, secret: string): string {
+  return secret ? text.split(secret).join('***') : text;
 }
 
 export function renderBody(reports: PrunerReport[], header?: string): string {
