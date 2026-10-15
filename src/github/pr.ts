@@ -64,6 +64,8 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
   }
   await exec('git', ['commit', '-m', commitMessage], { cwd });
 
+  const supersededPrs = await removeSupersededBranches(octokit, branch, logger);
+
   // The branch name is stable across runs, so a previous run may have pushed it
   // already. Compare trees to avoid force-pushing an identical commit (which
   // would only churn the open PR), and use an explicit lease so a concurrent
@@ -73,11 +75,18 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
   if (remote && remote.tree === localTree) {
     logger.info(`Branch ${branch} already has these changes; skipping push.`);
   } else {
-    await exec(
+    // silent keeps the token-bearing URL out of the log, which also hides
+    // git's stderr, so it is surfaced through the thrown error instead.
+    const pushed = await getExecOutput(
       'git',
       ['push', `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`, remoteUrl, `${branch}:${branch}`],
-      { cwd, silent: true },
+      { cwd, silent: true, ignoreReturnCode: true },
     );
+    if (pushed.exitCode !== 0) {
+      throw new Error(
+        `git push to ${branch} failed (exit ${pushed.exitCode}): ${redact(pushed.stderr, opts.token).trim()}`,
+      );
+    }
   }
 
   const existing = await octokit.rest.pulls.list({
@@ -120,54 +129,102 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
     });
   }
 
-  await closeSupersededPullRequests(octokit, branch, pr.number, logger);
+  await commentOnSupersededPullRequests(octokit, supersededPrs, pr.number, logger);
 
   return { number: pr.number, url: pr.html_url };
 }
 
+type Octokit = ReturnType<typeof github.getOctokit>;
+
 // Versions up to v1.0.4 appended a `YYYYMMDDHHMM` suffix to the branch name,
-// so each scheduled run left another open PR behind. Detect those leftovers
-// so they can be closed once the fixed-branch PR exists.
+// so each scheduled run left another branch (and often an open PR) behind.
 export function isSupersededBranch(branch: string, ref: string): boolean {
   const prefix = `${branch}/`;
   if (!ref.startsWith(prefix)) return false;
   return /^\d{12}$/.test(ref.slice(prefix.length));
 }
 
-async function closeSupersededPullRequests(
-  octokit: ReturnType<typeof github.getOctokit>,
-  branch: string,
+/**
+ * Deletes every branch under `<branch>/` left behind by v1.0.4 and earlier,
+ * closing open PRs on them first. Must run before pushing `<branch>`: git
+ * refuses to create `refs/heads/<branch>` while any ref exists under it.
+ *
+ * Returns the numbers of the closed PRs. Throws without deleting anything when
+ * a branch under `<branch>/` does not look like one of those leftovers. An API
+ * failure throws as well, leaving the branches handled before it closed and
+ * deleted.
+ */
+export async function removeSupersededBranches(octokit: Octokit, branch: string, logger: Logger): Promise<number[]> {
+  const { owner, repo } = github.context.repo;
+  const refs = await octokit.paginate(octokit.rest.git.listMatchingRefs, {
+    owner,
+    repo,
+    ref: `heads/${branch}/`,
+  });
+  const branches = refs.map((r) => ({ name: r.ref.replace(/^refs\/heads\//, ''), sha: r.object.sha }));
+  const foreign = branches.filter(({ name }) => !isSupersededBranch(branch, name)).map(({ name }) => name);
+  if (foreign.length > 0) {
+    throw new Error(
+      `Cannot push ${branch} because branches exist under ${branch}/ (${foreign.join(', ')}). ` +
+        'Rename or delete them, or set a different pr-branch.',
+    );
+  }
+
+  const closed: number[] = [];
+  for (const { name, sha } of branches) {
+    try {
+      const open = await octokit.rest.pulls.list({ owner, repo, head: `${owner}:${name}`, state: 'open' });
+      // Closing is destructive, so do not rely on the head filter alone to scope it.
+      const stale = open.data.filter((p) => p.head.ref === name && p.head.repo?.full_name === `${owner}/${repo}`);
+      for (const pr of stale) {
+        // The new PR does not exist yet and may never be opened if a later step
+        // fails, so explain the closure without referring to it.
+        await octokit.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: pr.number,
+          body: `Closing: branch \`${name}\` is deleted so that \`${branch}\` can be pushed. Later prune results go to the pull request from \`${branch}\`.`,
+        });
+        await octokit.rest.pulls.update({ owner, repo, pull_number: pr.number, state: 'closed' });
+        closed.push(pr.number);
+        logger.info(`Closed superseded PR #${pr.number}`);
+      }
+      await octokit.rest.git.deleteRef({ owner, repo, ref: `heads/${name}` });
+      logger.info(`Deleted superseded branch ${name} (was ${sha})`);
+    } catch (err) {
+      throw new Error(
+        `Failed to remove superseded branch ${name}, which blocks pushing ${branch}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+  return closed;
+}
+
+async function commentOnSupersededPullRequests(
+  octokit: Octokit,
+  prNumbers: number[],
   currentPrNumber: number,
   logger: Logger,
 ): Promise<void> {
   const { owner, repo } = github.context.repo;
-  const openPrs = await octokit.paginate(octokit.rest.pulls.list, {
-    owner,
-    repo,
-    state: 'open',
-    per_page: 100,
-  });
-  const superseded = openPrs.filter(
-    (p) =>
-      p.number !== currentPrNumber &&
-      p.head.repo?.full_name === `${owner}/${repo}` &&
-      isSupersededBranch(branch, p.head.ref),
-  );
-  for (const stale of superseded) {
+  for (const number of prNumbers) {
     try {
       await octokit.rest.issues.createComment({
         owner,
         repo,
-        issue_number: stale.number,
+        issue_number: number,
         body: `Superseded by #${currentPrNumber}.`,
       });
-      await octokit.rest.pulls.update({ owner, repo, pull_number: stale.number, state: 'closed' });
-      await octokit.rest.git.deleteRef({ owner, repo, ref: `heads/${stale.head.ref}` });
-      logger.info(`Closed superseded PR #${stale.number} and deleted ${stale.head.ref}`);
     } catch (err) {
-      logger.warn(`Failed to close superseded PR #${stale.number}: ${err instanceof Error ? err.message : String(err)}`);
+      logger.warn(`Failed to comment on superseded PR #${number}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+}
+
+function redact(text: string, secret: string): string {
+  return secret ? text.split(secret).join('***') : text;
 }
 
 export function renderBody(reports: PrunerReport[], header?: string): string {

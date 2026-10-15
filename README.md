@@ -157,13 +157,19 @@ up duplicate pull requests. When a previous run's PR is still open:
   is skipped so the PR is not churned with no-op commits.
 - Manual commits pushed onto the PR branch are overwritten on the next run —
   treat the PR as machine-owned and put manual fixes in a separate branch.
-- Open PRs left behind by versions up to v1.0.4 (which used
-  `<pr-branch>/<YYYYMMDDHHMM>` branch names) are closed as superseded and their
-  branches deleted once the fixed-branch PR exists.
+
+Versions up to v1.0.4 pushed to `<pr-branch>/<YYYYMMDDHHMM>` instead. Git
+cannot create `<pr-branch>` while any branch exists under `<pr-branch>/`, so
+whenever a run is about to push, it first deletes those leftover branches,
+whether or not they still have an open PR. Open PRs on them are closed with a
+comment, and linked to the new PR once it exists. Any other branch under
+`<pr-branch>/` stops the run with an error before anything is deleted; rename
+that branch or choose a different `pr-branch`.
 
 If you run the action more than once in the same repository (e.g. several
 `working-directory` values in a monorepo), give each instance a distinct
-`pr-branch` so the runs do not fight over one branch.
+`pr-branch` so the runs do not fight over one branch. Do not pick names where
+one is the other followed by `/` (e.g. `x` and `x/app`): git cannot hold both.
 
 ## Comments in `pnpm-workspace.yaml`
 
