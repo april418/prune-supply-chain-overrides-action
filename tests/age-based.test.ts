@@ -2,7 +2,10 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { minimumReleaseAgeExcludePruner, trustPolicyExcludePruner } from '../src/pruners/age-based.js';
+import {
+  minimumReleaseAgeExcludePruner,
+  trustPolicyExcludePruner,
+} from '../src/pruners/age-based.js';
 import { loadPnpmWorkspace } from '../src/files/pnpm-workspace.js';
 import { NpmRegistry } from '../src/registry/npm-registry.js';
 import { consoleLogger } from '../src/util/logger.js';
@@ -85,7 +88,8 @@ describe('minimumReleaseAgeExclude pruner', () => {
 
   it('keeps every entry when there is no lockfile', async () => {
     const ctx = await setupCtx({
-      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - ghost-pkg\n  - '@next/*'\n",
+      workspaceYaml:
+        "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - ghost-pkg\n  - '@next/*'\n",
       times: {},
       now: new Date('2026-05-16T00:00:00Z'),
     });
@@ -143,7 +147,10 @@ describe('minimumReleaseAgeExclude pruner', () => {
     const report = await minimumReleaseAgeExcludePruner.run(ctx);
     expect(report.removed).toHaveLength(0);
     expect(report.skipped).toEqual([
-      { key: '@next/*', reason: 'resolved version @next/swc-linux-x64-gnu@16.4.1 is only 1d old (< 7d)' },
+      {
+        key: '@next/*',
+        reason: 'resolved version @next/swc-linux-x64-gnu@16.4.1 is only 1d old (< 7d)',
+      },
     ]);
   });
 
@@ -153,7 +160,10 @@ describe('minimumReleaseAgeExclude pruner', () => {
       workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@types/*'\n",
       lockfile: new Map(names.map((name) => [name, new Set(['1.0.0'])])),
       times: Object.fromEntries(
-        names.map((name, i) => [name, { '1.0.0': i === 0 ? '2026-05-15T00:00:00Z' : '2026-04-01T00:00:00Z' }]),
+        names.map((name, i) => [
+          name,
+          { '1.0.0': i === 0 ? '2026-05-15T00:00:00Z' : '2026-04-01T00:00:00Z' },
+        ]),
       ),
       now: new Date('2026-05-16T00:00:00Z'),
     });
@@ -189,7 +199,8 @@ describe('minimumReleaseAgeExclude pruner', () => {
     expect(report.removed).toEqual([
       expect.objectContaining({
         key: '@next/*',
-        reason: 'newest resolved version @next/env@16.4.1 was published 45d ago (>= minimumReleaseAge 7d)',
+        reason:
+          'newest resolved version @next/env@16.4.1 was published 45d ago (>= minimumReleaseAge 7d)',
       }),
     ]);
   });
@@ -225,7 +236,8 @@ describe('minimumReleaseAgeExclude pruner', () => {
     expect(report.skipped).toEqual([
       {
         key: '@next/*',
-        reason: 'failed to fetch publish time for @next/third-parties@16.4.1: registry returned 503',
+        reason:
+          'failed to fetch publish time for @next/third-parties@16.4.1: registry returned 503',
       },
     ]);
   });
@@ -276,7 +288,8 @@ describe('minimumReleaseAgeExclude pruner', () => {
   });
 
   it('judges a versioned entry by the listed versions only', async () => {
-    const yaml = "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - 'webpack@4.47.0 || 5.102.1'\n";
+    const yaml =
+      "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - 'webpack@4.47.0 || 5.102.1'\n";
     const times = {
       webpack: {
         '4.47.0': '2026-01-01T00:00:00Z',
@@ -311,13 +324,16 @@ describe('minimumReleaseAgeExclude pruner', () => {
       now,
     });
     expect((await minimumReleaseAgeExcludePruner.run(gone)).removed).toEqual([
-      expect.objectContaining({ reason: 'none of the listed versions is resolved in pnpm-lock.yaml' }),
+      expect.objectContaining({
+        reason: 'none of the listed versions is resolved in pnpm-lock.yaml',
+      }),
     ]);
   });
 
   it('keeps entries it cannot judge', async () => {
     const ctx = await setupCtx({
-      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '!next'\n  - 'webpack@^5.0.0'\n",
+      workspaceYaml:
+        "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '!next'\n  - 'webpack@^5.0.0'\n",
       lockfile: new Map(),
       times: {},
       now: new Date('2026-05-16T00:00:00Z'),

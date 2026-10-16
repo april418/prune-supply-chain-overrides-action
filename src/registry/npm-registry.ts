@@ -62,7 +62,10 @@ export class NpmRegistry {
         return (await res.json()) as Packument;
       })
       .catch((err) => {
-        throw new PrunerError(`Failed to fetch packument for ${name}: ${asError(err).message}`, err);
+        throw new PrunerError(
+          `Failed to fetch packument for ${name}: ${asError(err).message}`,
+          err,
+        );
       });
     this.track(promise);
     this.packumentCache.set(name, promise);

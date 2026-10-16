@@ -30,7 +30,11 @@ describe('NpmRegistry request stats', () => {
 describe('NpmRegistry.publishTime', () => {
   it('returns null for a publish time that is not a date', async () => {
     const fetchImpl = (async () =>
-      Response.json({ name: 'pkg', time: { '1.0.0': 'garbage', '1.0.1': '2026-01-01T00:00:00Z' }, versions: {} })) as typeof fetch;
+      Response.json({
+        name: 'pkg',
+        time: { '1.0.0': 'garbage', '1.0.1': '2026-01-01T00:00:00Z' },
+        versions: {},
+      })) as typeof fetch;
     const registry = new NpmRegistry('https://registry.example', fetchImpl);
 
     expect(await registry.publishTime('pkg', '1.0.0')).toBeNull();

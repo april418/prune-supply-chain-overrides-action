@@ -24,7 +24,8 @@ export interface PullRequestResult {
 
 export async function ensureGitIdentity(cwd: string): Promise<void> {
   const name = process.env.GIT_AUTHOR_NAME ?? 'github-actions[bot]';
-  const email = process.env.GIT_AUTHOR_EMAIL ?? '41898282+github-actions[bot]@users.noreply.github.com';
+  const email =
+    process.env.GIT_AUTHOR_EMAIL ?? '41898282+github-actions[bot]@users.noreply.github.com';
   await exec('git', ['config', 'user.name', name], { cwd });
   await exec('git', ['config', 'user.email', email], { cwd });
 }
@@ -39,15 +40,26 @@ interface RemoteBranch {
   tree: string;
 }
 
-async function fetchRemoteBranch(cwd: string, remoteUrl: string, branch: string): Promise<RemoteBranch | null> {
-  const fetched = await getExecOutput('git', ['fetch', '--no-tags', remoteUrl, `refs/heads/${branch}`], {
-    cwd,
-    silent: true,
-    ignoreReturnCode: true,
-  });
+async function fetchRemoteBranch(
+  cwd: string,
+  remoteUrl: string,
+  branch: string,
+): Promise<RemoteBranch | null> {
+  const fetched = await getExecOutput(
+    'git',
+    ['fetch', '--no-tags', remoteUrl, `refs/heads/${branch}`],
+    {
+      cwd,
+      silent: true,
+      ignoreReturnCode: true,
+    },
+  );
   if (fetched.exitCode !== 0) return null;
   const sha = await getExecOutput('git', ['rev-parse', 'FETCH_HEAD'], { cwd, silent: true });
-  const tree = await getExecOutput('git', ['rev-parse', 'FETCH_HEAD^{tree}'], { cwd, silent: true });
+  const tree = await getExecOutput('git', ['rev-parse', 'FETCH_HEAD^{tree}'], {
+    cwd,
+    silent: true,
+  });
   return { sha: sha.stdout.trim(), tree: tree.stdout.trim() };
 }
 
@@ -71,7 +83,9 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
   // would only churn the open PR), and use an explicit lease so a concurrent
   // update between fetch and push is rejected instead of overwritten.
   const remote = await fetchRemoteBranch(cwd, remoteUrl, branch);
-  const localTree = (await getExecOutput('git', ['rev-parse', 'HEAD^{tree}'], { cwd, silent: true })).stdout.trim();
+  const localTree = (
+    await getExecOutput('git', ['rev-parse', 'HEAD^{tree}'], { cwd, silent: true })
+  ).stdout.trim();
   if (remote && remote.tree === localTree) {
     logger.info(`Branch ${branch} already has these changes; skipping push.`);
   } else {
@@ -79,7 +93,12 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
     // git's stderr, so it is surfaced through the thrown error instead.
     const pushed = await getExecOutput(
       'git',
-      ['push', `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`, remoteUrl, `${branch}:${branch}`],
+      [
+        'push',
+        `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`,
+        remoteUrl,
+        `${branch}:${branch}`,
+      ],
       { cwd, silent: true, ignoreReturnCode: true },
     );
     if (pushed.exitCode !== 0) {
@@ -154,15 +173,24 @@ export function isSupersededBranch(branch: string, ref: string): boolean {
  * failure throws as well, leaving the branches handled before it closed and
  * deleted.
  */
-export async function removeSupersededBranches(octokit: Octokit, branch: string, logger: Logger): Promise<number[]> {
+export async function removeSupersededBranches(
+  octokit: Octokit,
+  branch: string,
+  logger: Logger,
+): Promise<number[]> {
   const { owner, repo } = github.context.repo;
   const refs = await octokit.paginate(octokit.rest.git.listMatchingRefs, {
     owner,
     repo,
     ref: `heads/${branch}/`,
   });
-  const branches = refs.map((r) => ({ name: r.ref.replace(/^refs\/heads\//, ''), sha: r.object.sha }));
-  const foreign = branches.filter(({ name }) => !isSupersededBranch(branch, name)).map(({ name }) => name);
+  const branches = refs.map((r) => ({
+    name: r.ref.replace(/^refs\/heads\//, ''),
+    sha: r.object.sha,
+  }));
+  const foreign = branches
+    .filter(({ name }) => !isSupersededBranch(branch, name))
+    .map(({ name }) => name);
   if (foreign.length > 0) {
     throw new Error(
       `Cannot push ${branch} because branches exist under ${branch}/ (${foreign.join(', ')}). ` +
@@ -173,9 +201,16 @@ export async function removeSupersededBranches(octokit: Octokit, branch: string,
   const closed: number[] = [];
   for (const { name, sha } of branches) {
     try {
-      const open = await octokit.rest.pulls.list({ owner, repo, head: `${owner}:${name}`, state: 'open' });
+      const open = await octokit.rest.pulls.list({
+        owner,
+        repo,
+        head: `${owner}:${name}`,
+        state: 'open',
+      });
       // Closing is destructive, so do not rely on the head filter alone to scope it.
-      const stale = open.data.filter((p) => p.head.ref === name && p.head.repo?.full_name === `${owner}/${repo}`);
+      const stale = open.data.filter(
+        (p) => p.head.ref === name && p.head.repo?.full_name === `${owner}/${repo}`,
+      );
       for (const pr of stale) {
         // The new PR does not exist yet and may never be opened if a later step
         // fails, so explain the closure without referring to it.
@@ -218,7 +253,9 @@ async function commentOnSupersededPullRequests(
         body: `Superseded by #${currentPrNumber}.`,
       });
     } catch (err) {
-      logger.warn(`Failed to comment on superseded PR #${number}: ${err instanceof Error ? err.message : String(err)}`);
+      logger.warn(
+        `Failed to comment on superseded PR #${number}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 }
@@ -250,7 +287,9 @@ export function renderBody(reports: PrunerReport[], header?: string): string {
       lines.push('**Removed**');
       lines.push('');
       for (const entry of report.removed) {
-        lines.push(`- \`${entry.key}\`${entry.value ? ` (\`${entry.value}\`)` : ''} — ${entry.reason}`);
+        lines.push(
+          `- \`${entry.key}\`${entry.value ? ` (\`${entry.value}\`)` : ''} — ${entry.reason}`,
+        );
       }
       lines.push('');
     }
