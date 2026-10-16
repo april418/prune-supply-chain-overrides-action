@@ -59784,12 +59784,16 @@ class NpmRegistry {
         return null;
     }
     /**
-     * Look up publish time for a specific version. Returns null if unknown.
+     * Look up publish time for a specific version. Returns null if unknown or
+     * not a parseable date.
      */
     async publishTime(name, version) {
         const packument = await this.packument(name);
         const iso = packument.time[version];
-        return iso ? new Date(iso) : null;
+        if (!iso)
+            return null;
+        const date = new Date(iso);
+        return Number.isNaN(date.getTime()) ? null : date;
     }
 }
 /**
@@ -60980,9 +60984,10 @@ function formatMinutes(totalMinutes) {
 ;// CONCATENATED MODULE: ./src/util/concurrency.ts
 /**
  * Calls `fn` on the items with at most `limit` calls in flight and resolves to
- * the first value other than undefined that a call returns, or to undefined
- * when none does. No call starts once a value is found or a call rejects, and
- * the calls already in flight are awaited before this settles.
+ * the value of the first call to settle with something other than undefined,
+ * or to undefined when none does. Rejects if any call rejects. No call starts
+ * once a value is found or a call rejects, and the calls already in flight are
+ * awaited before this settles.
  */
 async function findFirst(items, limit, fn) {
     const iterator = items[Symbol.iterator]();
@@ -61127,7 +61132,8 @@ class AgeBasedPruner {
         if (!ctx.lockfile) {
             return { action: 'skip', reason: 'no lockfile to check the resolved versions against' };
         }
-        // Keyed by name because one packument answers for every version of it.
+        // Keyed by name: one packument dates every version of a package, so the
+        // concurrency limit counts registry requests rather than versions.
         const resolved = new Map();
         for (const [name, versions] of ctx.lockfile.resolvedVersions) {
             if (!parsed.matches(name))
@@ -61589,7 +61595,7 @@ async function run() {
         return;
     }
     if (!lockfile) {
-        logger.warn(`${lockfileManager(packageManager).name} is missing — the overrides pruner is skipped and the release-age and onlyBuiltDependencies pruners will be conservative.`);
+        logger.warn(`${lockfileManager(packageManager).name} is missing — the overrides pruner is skipped and the release-age and onlyBuiltDependencies pruners keep every entry.`);
     }
     const ctx = {
         cwd,
