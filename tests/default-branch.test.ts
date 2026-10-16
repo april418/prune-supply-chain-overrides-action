@@ -4,7 +4,7 @@ import { consoleLogger } from '../src/util/logger.js';
 const reposGetMock = vi.hoisted(() => vi.fn());
 const getExecOutputMock = vi.hoisted(() => vi.fn());
 const contextMock = vi.hoisted(() => ({
-  repo: { owner: 'IntimateMerger', repo: 'rt.js' },
+  repo: { owner: 'octo-org', repo: 'octo-repo' },
   payload: {} as { repository?: { default_branch?: string } },
 }));
 
@@ -33,7 +33,7 @@ describe('resolveDefaultBranch', () => {
     const result = await resolveDefaultBranch('token', '/repo', consoleLogger);
 
     expect(result).toBe('develop');
-    expect(reposGetMock).toHaveBeenCalledWith({ owner: 'IntimateMerger', repo: 'rt.js' });
+    expect(reposGetMock).toHaveBeenCalledWith({ owner: 'octo-org', repo: 'octo-repo' });
     expect(getExecOutputMock).not.toHaveBeenCalled();
   });
 
