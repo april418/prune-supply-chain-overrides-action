@@ -136,12 +136,15 @@ export class NpmRegistry {
   }
 
   /**
-   * Look up publish time for a specific version. Returns null if unknown.
+   * Look up publish time for a specific version. Returns null if unknown or
+   * not a parseable date.
    */
   async publishTime(name: string, version: string): Promise<Date | null> {
     const packument = await this.packument(name);
     const iso = packument.time[version];
-    return iso ? new Date(iso) : null;
+    if (!iso) return null;
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? null : date;
   }
 }
 
