@@ -143,7 +143,32 @@ describe('minimumReleaseAgeExclude pruner', () => {
     const report = await minimumReleaseAgeExcludePruner.run(ctx);
     expect(report.removed).toHaveLength(0);
     expect(report.skipped).toEqual([
-      { key: '@next/*', reason: 'newest resolved version @next/swc-linux-x64-gnu@16.4.1 is only 1d old (< 7d)' },
+      { key: '@next/*', reason: 'resolved version @next/swc-linux-x64-gnu@16.4.1 is only 1d old (< 7d)' },
+    ]);
+  });
+
+  it('stops looking up publish times once a matched package is too young', async () => {
+    const names = Array.from({ length: 50 }, (_, i) => `@types/pkg-${i}`);
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@types/*'\n",
+      lockfile: new Map(names.map((name) => [name, new Set(['1.0.0'])])),
+      times: Object.fromEntries(
+        names.map((name, i) => [name, { '1.0.0': i === 0 ? '2026-05-15T00:00:00Z' : '2026-04-01T00:00:00Z' }]),
+      ),
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const lookups: string[] = [];
+    const publishTime = ctx.registry.publishTime.bind(ctx.registry);
+    ctx.registry.publishTime = async (name, version) => {
+      lookups.push(name);
+      return publishTime(name, version);
+    };
+
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+
+    expect(lookups.length).toBeLessThan(names.length);
+    expect(report.skipped).toEqual([
+      { key: '@types/*', reason: 'resolved version @types/pkg-0@1.0.0 is only 1d old (< 7d)' },
     ]);
   });
 

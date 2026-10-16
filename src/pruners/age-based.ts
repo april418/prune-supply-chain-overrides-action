@@ -8,7 +8,12 @@ import {
   removeKey,
 } from '../files/pnpm-workspace.js';
 import { formatMinutes } from '../util/format.js';
+import { findFirst } from '../util/concurrency.js';
 import { parseExcludeEntry } from './exclude-entry.js';
+
+// A pattern such as `*` can match every package in the lockfile; unbounded,
+// that is one simultaneous registry request per package.
+const REGISTRY_CONCURRENCY = 8;
 
 interface AgeBasedConfig {
   name: PrunerName;
@@ -98,61 +103,54 @@ class AgeBasedPruner implements Pruner {
       return { action: 'skip', reason: 'no lockfile to check the resolved versions against' };
     }
 
-    const resolved: Array<{ name: string; version: string }> = [];
+    // Keyed by name because one packument answers for every version of it.
+    const resolved = new Map<string, string[]>();
     for (const [name, versions] of ctx.lockfile.resolvedVersions) {
       if (!parsed.matches(name)) continue;
-      for (const version of versions) {
+      const matched = [...versions].filter(
         // pnpm checks only registry versions against the policy; `link:` and
         // alias entries have no publish time and would never let the entry go.
-        if (semver.valid(version) === null) continue;
-        if (parsed.versions.length === 0 || parsed.versions.includes(version)) {
-          resolved.push({ name, version });
-        }
-      }
+        (version) =>
+          semver.valid(version) !== null &&
+          (parsed.versions.length === 0 || parsed.versions.includes(version)),
+      );
+      if (matched.length > 0) resolved.set(name, matched);
     }
-    if (resolved.length === 0) {
+    if (resolved.size === 0) {
       let reason = 'package is no longer referenced from pnpm-lock.yaml';
       if (parsed.isPattern) reason = 'no package matching the pattern is referenced from pnpm-lock.yaml';
       if (parsed.versions.length > 0) reason = 'none of the listed versions is resolved in pnpm-lock.yaml';
       return { action: 'remove', reason };
     }
 
-    let newest: { name: string; version: string; publishedAt: Date } | null = null;
-    for (const { name, version } of resolved) {
-      let publishedAt: Date | null;
-      try {
-        publishedAt = await ctx.registry.publishTime(name, version);
-      } catch (err) {
-        return {
-          action: 'skip',
-          reason: `failed to fetch publish time for ${name}@${version}: ${(err as Error).message}`,
-        };
+    // One version that is too young (or cannot be dated) keeps the entry, so
+    // the lookups stop there instead of covering every package a pattern matches.
+    const checked: Array<{ label: string; publishedAt: Date }> = [];
+    const keepReason = await findFirst(resolved, REGISTRY_CONCURRENCY, async ([name, versions]) => {
+      for (const version of versions) {
+        let publishedAt: Date | null;
+        try {
+          publishedAt = await ctx.registry.publishTime(name, version);
+        } catch (err) {
+          return `failed to fetch publish time for ${name}@${version}: ${(err as Error).message}`;
+        }
+        if (!publishedAt) return `npm registry has no publish time for ${name}@${version}`;
+        const label = parsed.isPattern ? `${name}@${version}` : version;
+        const ageMin = (ctx.now.getTime() - publishedAt.getTime()) / 60_000;
+        if (ageMin < thresholdMinutes) {
+          return `resolved version ${label} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`;
+        }
+        checked.push({ label, publishedAt });
       }
-      if (!publishedAt) {
-        return {
-          action: 'skip',
-          reason: `npm registry has no publish time for ${name}@${version}`,
-        };
-      }
-      if (!newest || publishedAt > newest.publishedAt) {
-        newest = { name, version, publishedAt };
-      }
-    }
-    if (!newest) {
-      return { action: 'skip', reason: 'no resolved versions could be checked' };
-    }
+      return undefined;
+    });
+    if (keepReason !== undefined) return { action: 'skip', reason: keepReason };
 
-    const label = parsed.isPattern ? `${newest.name}@${newest.version}` : newest.version;
+    const newest = checked.reduce((a, b) => (b.publishedAt > a.publishedAt ? b : a));
     const ageMin = (ctx.now.getTime() - newest.publishedAt.getTime()) / 60_000;
-    if (ageMin >= thresholdMinutes) {
-      return {
-        action: 'remove',
-        reason: `newest resolved version ${label} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
-      };
-    }
     return {
-      action: 'skip',
-      reason: `newest resolved version ${label} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`,
+      action: 'remove',
+      reason: `newest resolved version ${newest.label} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
     };
   }
 }
