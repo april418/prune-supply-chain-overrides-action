@@ -83,6 +83,20 @@ describe('minimumReleaseAgeExclude pruner', () => {
     expect(report.removed.map((e) => e.key)).toEqual(['ghost-pkg']);
   });
 
+  it('keeps every entry when there is no lockfile', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - ghost-pkg\n  - '@next/*'\n",
+      times: {},
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+    expect(report.removed).toHaveLength(0);
+    expect(report.skipped).toEqual([
+      { key: 'ghost-pkg', reason: 'no lockfile to check the resolved versions against' },
+      { key: '@next/*', reason: 'no lockfile to check the resolved versions against' },
+    ]);
+  });
+
   it('skips entry when threshold is not configured', async () => {
     const ctx = await setupCtx({
       workspaceYaml: 'minimumReleaseAgeExclude:\n  - fast-uri\n',

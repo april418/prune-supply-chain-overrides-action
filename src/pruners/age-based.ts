@@ -94,9 +94,12 @@ class AgeBasedPruner implements Pruner {
         reason: 'not a package name, name pattern, or name@exact-versions entry that can be checked',
       };
     }
+    if (!ctx.lockfile) {
+      return { action: 'skip', reason: 'no lockfile to check the resolved versions against' };
+    }
 
     const resolved: Array<{ name: string; version: string }> = [];
-    for (const [name, versions] of ctx.lockfile?.resolvedVersions ?? []) {
+    for (const [name, versions] of ctx.lockfile.resolvedVersions) {
       if (!parsed.matches(name)) continue;
       for (const version of versions) {
         // pnpm checks only registry versions against the policy; `link:` and
