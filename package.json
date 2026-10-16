@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "smoke": "node scripts/smoke.mjs",
     "lint": "eslint src tests",
-    "format": "prettier --write src tests"
+    "format": "prettier --write src tests",
+    "format:check": "prettier --check src tests"
   },
   "dependencies": {
     "@actions/core": "1.11.1",
