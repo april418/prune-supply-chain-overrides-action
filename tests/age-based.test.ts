@@ -175,12 +175,59 @@ describe('minimumReleaseAgeExclude pruner', () => {
   it('removes a name pattern once every package it matches is past the threshold', async () => {
     const ctx = await setupCtx({
       workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@next/*'\n",
-      lockfile: new Map([['@next/env', new Set(['16.4.1'])]]),
-      times: { '@next/env': { '16.4.1': '2026-04-01T00:00:00Z' } },
+      lockfile: new Map([
+        ['@next/env', new Set(['16.4.1'])],
+        ['@next/font', new Set(['16.4.0'])],
+      ]),
+      times: {
+        '@next/env': { '16.4.1': '2026-04-01T00:00:00Z' },
+        '@next/font': { '16.4.0': '2026-03-01T00:00:00Z' },
+      },
       now: new Date('2026-05-16T00:00:00Z'),
     });
     const report = await minimumReleaseAgeExcludePruner.run(ctx);
-    expect(report.removed.map((e) => e.key)).toEqual(['@next/*']);
+    expect(report.removed).toEqual([
+      expect.objectContaining({
+        key: '@next/*',
+        reason: 'newest resolved version @next/env@16.4.1 was published 45d ago (>= minimumReleaseAge 7d)',
+      }),
+    ]);
+  });
+
+  it('removes an entry whose newest version is exactly as old as the threshold', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: 'minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - fast-uri\n',
+      lockfile: new Map([['fast-uri', new Set(['3.1.2'])]]),
+      times: { 'fast-uri': { '3.1.2': '2026-05-09T00:00:00Z' } },
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+    expect(report.removed.map((e) => e.key)).toEqual(['fast-uri']);
+  });
+
+  it('keeps a name pattern when the publish time of any matched package cannot be fetched', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@next/*'\n",
+      lockfile: new Map([
+        ['@next/env', new Set(['16.4.1'])],
+        ['@next/third-parties', new Set(['16.4.1'])],
+      ]),
+      times: { '@next/env': { '16.4.1': '2026-04-01T00:00:00Z' } },
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    const publishTime = ctx.registry.publishTime.bind(ctx.registry);
+    ctx.registry.publishTime = async (name, version) => {
+      if (name === '@next/third-parties') throw new Error('registry returned 503');
+      return publishTime(name, version);
+    };
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+    expect(report.removed).toHaveLength(0);
+    expect(report.skipped).toEqual([
+      {
+        key: '@next/*',
+        reason: 'failed to fetch publish time for @next/third-parties@16.4.1: registry returned 503',
+      },
+    ]);
   });
 
   it('keeps a name pattern when the publish time of any matched package is unknown', async () => {
