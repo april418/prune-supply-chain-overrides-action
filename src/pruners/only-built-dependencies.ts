@@ -62,7 +62,10 @@ async function evaluate(
   pkg: string,
   ctx: PrunerContext,
 ): Promise<{ action: 'remove' | 'skip'; reason: string }> {
-  const versions = ctx.lockfile?.resolvedVersions.get(pkg);
+  if (!ctx.lockfile) {
+    return { action: 'skip', reason: 'no lockfile to check the resolved versions against' };
+  }
+  const versions = ctx.lockfile.resolvedVersions.get(pkg);
   if (!versions || versions.size === 0) {
     return { action: 'remove', reason: 'package is no longer present in pnpm-lock.yaml' };
   }
