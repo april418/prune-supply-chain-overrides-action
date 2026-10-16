@@ -42,15 +42,34 @@ describe('findFirst', () => {
     expect(result).toBe(1);
   });
 
-  it('rejects with the error of a failed call and starts no further call', async () => {
+  it('rejects with the error of a failed call once the calls in flight finish', async () => {
     const started: number[] = [];
+    const finished: number[] = [];
     const promise = findFirst([...Array(20).keys()], 2, async (i) => {
       started.push(i);
-      await tick();
+      await new Promise((resolve) => setTimeout(resolve, i === 0 ? 1 : 20));
+      finished.push(i);
       if (i === 0) throw new Error('boom');
       return undefined;
     });
     await expect(promise).rejects.toThrow('boom');
     expect(started).toEqual([0, 1]);
+    expect(finished).toEqual([0, 1]);
+  });
+
+  it('runs one call at a time when the limit is below 1', async () => {
+    let peak = 0;
+    let inFlight = 0;
+    const seen: number[] = [];
+    await findFirst([0, 1, 2], 0, async (i) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await tick();
+      inFlight -= 1;
+      seen.push(i);
+      return undefined;
+    });
+    expect(seen).toEqual([0, 1, 2]);
+    expect(peak).toBe(1);
   });
 });
