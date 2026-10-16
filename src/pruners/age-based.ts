@@ -103,7 +103,8 @@ class AgeBasedPruner implements Pruner {
       return { action: 'skip', reason: 'no lockfile to check the resolved versions against' };
     }
 
-    // Keyed by name because one packument answers for every version of it.
+    // Keyed by name: one packument dates every version of a package, so the
+    // concurrency limit counts registry requests rather than versions.
     const resolved = new Map<string, string[]>();
     for (const [name, versions] of ctx.lockfile.resolvedVersions) {
       if (!parsed.matches(name)) continue;

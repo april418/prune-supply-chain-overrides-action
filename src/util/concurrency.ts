@@ -1,8 +1,9 @@
 /**
  * Calls `fn` on the items with at most `limit` calls in flight and resolves to
- * the first value other than undefined that a call returns, or to undefined
- * when none does. No call starts once a value is found or a call rejects, and
- * the calls already in flight are awaited before this settles.
+ * the value of the first call to settle with something other than undefined,
+ * or to undefined when none does. Rejects if any call rejects. No call starts
+ * once a value is found or a call rejects, and the calls already in flight are
+ * awaited before this settles.
  */
 export async function findFirst<T, R>(
   items: Iterable<T>,
