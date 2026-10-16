@@ -59784,12 +59784,16 @@ class NpmRegistry {
         return null;
     }
     /**
-     * Look up publish time for a specific version. Returns null if unknown.
+     * Look up publish time for a specific version. Returns null if unknown or
+     * not a parseable date.
      */
     async publishTime(name, version) {
         const packument = await this.packument(name);
         const iso = packument.time[version];
-        return iso ? new Date(iso) : null;
+        if (!iso)
+            return null;
+        const date = new Date(iso);
+        return Number.isNaN(date.getTime()) ? null : date;
     }
 }
 /**
@@ -60977,6 +60981,41 @@ function formatMinutes(totalMinutes) {
     return remHours === 0 ? `${days}d` : `${days}d ${remHours}h`;
 }
 
+;// CONCATENATED MODULE: ./src/util/concurrency.ts
+/**
+ * Calls `fn` on the items with at most `limit` calls in flight and resolves to
+ * the value of the first call to settle with something other than undefined,
+ * or to undefined when none does. Rejects if any call rejects. No call starts
+ * once a value is found or a call rejects, and the calls already in flight are
+ * awaited before this settles.
+ */
+async function findFirst(items, limit, fn) {
+    const iterator = items[Symbol.iterator]();
+    let found;
+    let failed = false;
+    const worker = async () => {
+        while (!found && !failed) {
+            const next = iterator.next();
+            if (next.done)
+                return;
+            try {
+                const value = await fn(next.value);
+                if (value !== undefined)
+                    found ??= { value };
+            }
+            catch (err) {
+                failed = true;
+                throw err;
+            }
+        }
+    };
+    const results = await Promise.allSettled(Array.from({ length: Math.max(1, limit) }, worker));
+    const rejected = results.find((r) => r.status === 'rejected');
+    if (rejected)
+        throw rejected.reason;
+    return found?.value;
+}
+
 ;// CONCATENATED MODULE: ./src/pruners/exclude-entry.ts
 
 /**
@@ -61019,6 +61058,10 @@ function escapeRegExp(text) {
 
 
 
+
+// A pattern such as `*` can match every package in the lockfile; unbounded,
+// that is one simultaneous registry request per package.
+const REGISTRY_CONCURRENCY = 8;
 /**
  * Generic implementation for "remove entries whose resolved versions are
  * already past a release-age threshold" pruners. Used for both
@@ -61086,21 +61129,24 @@ class AgeBasedPruner {
                 reason: 'not a package name, name pattern, or name@exact-versions entry that can be checked',
             };
         }
-        const resolved = [];
-        for (const [name, versions] of ctx.lockfile?.resolvedVersions ?? []) {
+        if (!ctx.lockfile) {
+            return { action: 'skip', reason: 'no lockfile to check the resolved versions against' };
+        }
+        // Keyed by name: one packument dates every version of a package, so the
+        // concurrency limit counts registry requests rather than versions.
+        const resolved = new Map();
+        for (const [name, versions] of ctx.lockfile.resolvedVersions) {
             if (!parsed.matches(name))
                 continue;
-            for (const version of versions) {
-                // pnpm checks only registry versions against the policy; `link:` and
-                // alias entries have no publish time and would never let the entry go.
-                if (semver_default().valid(version) === null)
-                    continue;
-                if (parsed.versions.length === 0 || parsed.versions.includes(version)) {
-                    resolved.push({ name, version });
-                }
-            }
+            const matched = [...versions].filter(
+            // pnpm checks only registry versions against the policy; `link:` and
+            // alias entries have no publish time and would never let the entry go.
+            (version) => semver_default().valid(version) !== null &&
+                (parsed.versions.length === 0 || parsed.versions.includes(version)));
+            if (matched.length > 0)
+                resolved.set(name, matched);
         }
-        if (resolved.length === 0) {
+        if (resolved.size === 0) {
             let reason = 'package is no longer referenced from pnpm-lock.yaml';
             if (parsed.isPattern)
                 reason = 'no package matching the pattern is referenced from pnpm-lock.yaml';
@@ -61108,42 +61154,36 @@ class AgeBasedPruner {
                 reason = 'none of the listed versions is resolved in pnpm-lock.yaml';
             return { action: 'remove', reason };
         }
-        let newest = null;
-        for (const { name, version } of resolved) {
-            let publishedAt;
-            try {
-                publishedAt = await ctx.registry.publishTime(name, version);
+        // One version that is too young (or cannot be dated) keeps the entry, so
+        // the lookups stop there instead of covering every package a pattern matches.
+        const checked = [];
+        const keepReason = await findFirst(resolved, REGISTRY_CONCURRENCY, async ([name, versions]) => {
+            for (const version of versions) {
+                let publishedAt;
+                try {
+                    publishedAt = await ctx.registry.publishTime(name, version);
+                }
+                catch (err) {
+                    return `failed to fetch publish time for ${name}@${version}: ${err.message}`;
+                }
+                if (!publishedAt)
+                    return `npm registry has no publish time for ${name}@${version}`;
+                const label = parsed.isPattern ? `${name}@${version}` : version;
+                const ageMin = (ctx.now.getTime() - publishedAt.getTime()) / 60_000;
+                if (ageMin < thresholdMinutes) {
+                    return `resolved version ${label} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`;
+                }
+                checked.push({ label, publishedAt });
             }
-            catch (err) {
-                return {
-                    action: 'skip',
-                    reason: `failed to fetch publish time for ${name}@${version}: ${err.message}`,
-                };
-            }
-            if (!publishedAt) {
-                return {
-                    action: 'skip',
-                    reason: `npm registry has no publish time for ${name}@${version}`,
-                };
-            }
-            if (!newest || publishedAt > newest.publishedAt) {
-                newest = { name, version, publishedAt };
-            }
-        }
-        if (!newest) {
-            return { action: 'skip', reason: 'no resolved versions could be checked' };
-        }
-        const label = parsed.isPattern ? `${newest.name}@${newest.version}` : newest.version;
+            return undefined;
+        });
+        if (keepReason !== undefined)
+            return { action: 'skip', reason: keepReason };
+        const newest = checked.reduce((a, b) => (b.publishedAt > a.publishedAt ? b : a));
         const ageMin = (ctx.now.getTime() - newest.publishedAt.getTime()) / 60_000;
-        if (ageMin >= thresholdMinutes) {
-            return {
-                action: 'remove',
-                reason: `newest resolved version ${label} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
-            };
-        }
         return {
-            action: 'skip',
-            reason: `newest resolved version ${label} is only ${formatMinutes(ageMin)} old (< ${formatMinutes(thresholdMinutes)})`,
+            action: 'remove',
+            reason: `newest resolved version ${newest.label} was published ${formatMinutes(ageMin)} ago (>= ${this.config.thresholdKey} ${formatMinutes(thresholdMinutes)})`,
         };
     }
 }
@@ -61208,7 +61248,10 @@ const onlyBuiltDependenciesPruner = {
     },
 };
 async function evaluate(pkg, ctx) {
-    const versions = ctx.lockfile?.resolvedVersions.get(pkg);
+    if (!ctx.lockfile) {
+        return { action: 'skip', reason: 'no lockfile to check the resolved versions against' };
+    }
+    const versions = ctx.lockfile.resolvedVersions.get(pkg);
     if (!versions || versions.size === 0) {
         return { action: 'remove', reason: 'package is no longer present in pnpm-lock.yaml' };
     }
@@ -61552,7 +61595,7 @@ async function run() {
         return;
     }
     if (!lockfile) {
-        logger.warn(`${lockfileManager(packageManager).name} is missing — the overrides pruner is skipped and the release-age and onlyBuiltDependencies pruners will be conservative.`);
+        logger.warn(`${lockfileManager(packageManager).name} is missing — the overrides pruner is skipped and the release-age and onlyBuiltDependencies pruners keep every entry.`);
     }
     const ctx = {
         cwd,

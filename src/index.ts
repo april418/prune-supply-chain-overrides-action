@@ -44,7 +44,7 @@ export async function run(): Promise<void> {
   }
   if (!lockfile) {
     logger.warn(
-      `${lockfileManager(packageManager).name} is missing — the overrides pruner is skipped and the release-age and onlyBuiltDependencies pruners will be conservative.`,
+      `${lockfileManager(packageManager).name} is missing — the overrides pruner is skipped and the release-age and onlyBuiltDependencies pruners keep every entry.`,
     );
   }
 
