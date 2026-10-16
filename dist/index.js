@@ -61314,7 +61314,10 @@ async function fetchRemoteBranch(cwd, remoteUrl, branch) {
     if (fetched.exitCode !== 0)
         return null;
     const sha = await (0,exec.getExecOutput)('git', ['rev-parse', 'FETCH_HEAD'], { cwd, silent: true });
-    const tree = await (0,exec.getExecOutput)('git', ['rev-parse', 'FETCH_HEAD^{tree}'], { cwd, silent: true });
+    const tree = await (0,exec.getExecOutput)('git', ['rev-parse', 'FETCH_HEAD^{tree}'], {
+        cwd,
+        silent: true,
+    });
     return { sha: sha.stdout.trim(), tree: tree.stdout.trim() };
 }
 async function createPullRequest(opts) {
@@ -61341,7 +61344,12 @@ async function createPullRequest(opts) {
     else {
         // silent keeps the token-bearing URL out of the log, which also hides
         // git's stderr, so it is surfaced through the thrown error instead.
-        const pushed = await (0,exec.getExecOutput)('git', ['push', `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`, remoteUrl, `${branch}:${branch}`], { cwd, silent: true, ignoreReturnCode: true });
+        const pushed = await (0,exec.getExecOutput)('git', [
+            'push',
+            `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`,
+            remoteUrl,
+            `${branch}:${branch}`,
+        ], { cwd, silent: true, ignoreReturnCode: true });
         if (pushed.exitCode !== 0) {
             throw new Error(`git push to ${branch} failed (exit ${pushed.exitCode}): ${redact(pushed.stderr, opts.token).trim()}`);
         }
@@ -61412,8 +61420,13 @@ async function removeSupersededBranches(octokit, branch, logger) {
         repo,
         ref: `heads/${branch}/`,
     });
-    const branches = refs.map((r) => ({ name: r.ref.replace(/^refs\/heads\//, ''), sha: r.object.sha }));
-    const foreign = branches.filter(({ name }) => !isSupersededBranch(branch, name)).map(({ name }) => name);
+    const branches = refs.map((r) => ({
+        name: r.ref.replace(/^refs\/heads\//, ''),
+        sha: r.object.sha,
+    }));
+    const foreign = branches
+        .filter(({ name }) => !isSupersededBranch(branch, name))
+        .map(({ name }) => name);
     if (foreign.length > 0) {
         throw new Error(`Cannot push ${branch} because branches exist under ${branch}/ (${foreign.join(', ')}). ` +
             'Rename or delete them, or set a different pr-branch.');
@@ -61421,7 +61434,12 @@ async function removeSupersededBranches(octokit, branch, logger) {
     const closed = [];
     for (const { name, sha } of branches) {
         try {
-            const open = await octokit.rest.pulls.list({ owner, repo, head: `${owner}:${name}`, state: 'open' });
+            const open = await octokit.rest.pulls.list({
+                owner,
+                repo,
+                head: `${owner}:${name}`,
+                state: 'open',
+            });
             // Closing is destructive, so do not rely on the head filter alone to scope it.
             const stale = open.data.filter((p) => p.head.ref === name && p.head.repo?.full_name === `${owner}/${repo}`);
             for (const pr of stale) {
