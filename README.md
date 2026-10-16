@@ -25,6 +25,8 @@ remove, and opens a pull request for review.
 
 Entries that the action cannot verify (e.g. the registry has no publish time,
 or the simulation fails) are kept and reported under "Skipped" in the PR body.
+Without a lockfile nothing can be verified, so nothing is removed: the
+`overrides` pruner is skipped and the other pruners keep every entry.
 If some npm registry requests fail, the action logs a warning and keeps the
 affected entries. If every request fails, the action fails instead of
 reporting that nothing needs pruning, since no entry could be verified.
