@@ -18,7 +18,7 @@ const octokitMock = vi.hoisted(() => ({
 
 vi.mock('@actions/github', () => ({
   getOctokit: () => octokitMock,
-  context: { repo: { owner: 'IntimateMerger', repo: 'piggy-next' } },
+  context: { repo: { owner: 'octo-org', repo: 'octo-repo' } },
 }));
 
 vi.mock('@actions/exec', () => ({
@@ -54,8 +54,8 @@ describe('isSupersededBranch', () => {
 });
 
 describe('createPullRequest', () => {
-  const OWNER = 'IntimateMerger';
-  const REPO = `${OWNER}/piggy-next`;
+  const OWNER = 'octo-org';
+  const REPO = `${OWNER}/octo-repo`;
   const closingNote = (name: string) =>
     `Closing: branch \`${name}\` is deleted so that \`${BRANCH}\` can be pushed. Later prune results go to the pull request from \`${BRANCH}\`.`;
 
@@ -121,7 +121,7 @@ describe('createPullRequest', () => {
     });
     octokitMock.rest.pulls.create.mockReset().mockImplementation(async () => {
       calls.push('create');
-      return { data: { number: 300, html_url: 'https://github.com/IntimateMerger/piggy-next/pull/300' } };
+      return { data: { number: 300, html_url: 'https://github.com/octo-org/octo-repo/pull/300' } };
     });
     octokitMock.rest.issues.createComment.mockReset().mockImplementation(
       async ({ issue_number, body }: { issue_number: number; body: string }) => {
@@ -165,7 +165,7 @@ describe('createPullRequest', () => {
     remoteRefs = [`${BRANCH}/202607200707`];
     openPrs = [
       { number: 210, head: `${BRANCH}/202607200707` },
-      { number: 211, head: `${BRANCH}/202607200707`, repo: 'someone/piggy-next' },
+      { number: 211, head: `${BRANCH}/202607200707`, repo: 'someone/octo-repo' },
       { number: 212, head: 'feature/unrelated' },
     ];
     octokitMock.rest.pulls.list.mockImplementationOnce(async () => ({ data: openPrs.map(toPullsListItem) }));
@@ -210,7 +210,7 @@ describe('createPullRequest', () => {
   it("surfaces git's stderr with the token redacted when the push fails", async () => {
     push = {
       exitCode: 1,
-      stderr: `remote: error: cannot lock ref\nTo https://x-access-token:${TOKEN}@github.com/IntimateMerger/piggy-next.git\n`,
+      stderr: `remote: error: cannot lock ref\nTo https://x-access-token:${TOKEN}@github.com/octo-org/octo-repo.git\n`,
     };
 
     const error = await run().then(
