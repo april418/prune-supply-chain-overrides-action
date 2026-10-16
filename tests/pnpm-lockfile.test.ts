@@ -21,12 +21,12 @@ describe('loadPnpmLockfile', () => {
       [
         "lockfileVersion: '9.0'",
         'packages:',
-        "  fast-uri@3.1.2:",
+        '  fast-uri@3.1.2:',
         '    resolution: { integrity: sha512-x }',
         "  '@next/env@16.2.6':",
         '    resolution: { integrity: sha512-x }',
         'snapshots:',
-        "  fast-uri@3.1.2:",
+        '  fast-uri@3.1.2:',
         '    dev: false',
       ].join('\n'),
     );
@@ -41,7 +41,7 @@ describe('loadPnpmLockfile', () => {
       [
         "lockfileVersion: '9.0'",
         'packages:',
-        "  react@19.2.5(@types/react@19.2.14):",
+        '  react@19.2.5(@types/react@19.2.14):',
         '    resolution: { integrity: sha512-x }',
       ].join('\n'),
     );
@@ -51,12 +51,7 @@ describe('loadPnpmLockfile', () => {
 
   it('extracts root-level overrides', async () => {
     const dir = await withLockfile(
-      [
-        "lockfileVersion: '9.0'",
-        'overrides:',
-        "  fast-uri: '>=3.1.2'",
-        'packages: {}',
-      ].join('\n'),
+      ["lockfileVersion: '9.0'", 'overrides:', "  fast-uri: '>=3.1.2'", 'packages: {}'].join('\n'),
     );
     const lock = await loadPnpmLockfile(dir);
     expect(lock!.recordedOverrides).toEqual({ 'fast-uri': '>=3.1.2' });

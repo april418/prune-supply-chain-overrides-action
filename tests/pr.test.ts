@@ -90,7 +90,8 @@ describe('createPullRequest', () => {
 
     execMock.mockReset().mockResolvedValue(0);
     getExecOutputMock.mockReset().mockImplementation(async (_cmd: string, args: string[]) => {
-      if (args[0] === 'fetch') return { exitCode: 128, stdout: '', stderr: "fatal: couldn't find remote ref" };
+      if (args[0] === 'fetch')
+        return { exitCode: 128, stdout: '', stderr: "fatal: couldn't find remote ref" };
       if (args[0] === 'rev-parse') return { exitCode: 0, stdout: 'tree\n', stderr: '' };
       if (args[0] === 'push') {
         calls.push('push');
@@ -99,40 +100,62 @@ describe('createPullRequest', () => {
       throw new Error(`unexpected git ${args.join(' ')}`);
     });
 
-    octokitMock.paginate.mockReset().mockImplementation(async (fn: (p: unknown) => Promise<{ data: unknown }>, p) => {
-      return (await fn(p)).data;
-    });
-    octokitMock.rest.git.listMatchingRefs.mockReset().mockImplementation(async ({ ref }: { ref: string }) => ({
-      data: remoteRefs
-        .map((name) => `refs/heads/${name}`)
-        .filter((r) => r.startsWith(`refs/${ref}`))
-        .map((r) => ({ ref: r, object: { sha: 'abc123' } })),
-    }));
-    octokitMock.rest.git.deleteRef.mockReset().mockImplementation(async ({ ref }: { ref: string }) => {
-      calls.push(`deleteRef ${ref}`);
-    });
-    octokitMock.rest.pulls.list.mockReset().mockImplementation(async ({ head }: { head: string }) => {
-      if (!head.startsWith(`${OWNER}:`)) throw new Error(`head must be "owner:branch", got "${head}"`);
-      const ref = head.slice(OWNER.length + 1);
-      return { data: openPrs.filter((p) => p.head === ref && (p.repo ?? REPO) === REPO).map(toPullsListItem) };
-    });
-    octokitMock.rest.pulls.update.mockReset().mockImplementation(async ({ pull_number }: { pull_number: number }) => {
-      calls.push(`close #${pull_number}`);
-    });
+    octokitMock.paginate
+      .mockReset()
+      .mockImplementation(async (fn: (p: unknown) => Promise<{ data: unknown }>, p) => {
+        return (await fn(p)).data;
+      });
+    octokitMock.rest.git.listMatchingRefs
+      .mockReset()
+      .mockImplementation(async ({ ref }: { ref: string }) => ({
+        data: remoteRefs
+          .map((name) => `refs/heads/${name}`)
+          .filter((r) => r.startsWith(`refs/${ref}`))
+          .map((r) => ({ ref: r, object: { sha: 'abc123' } })),
+      }));
+    octokitMock.rest.git.deleteRef
+      .mockReset()
+      .mockImplementation(async ({ ref }: { ref: string }) => {
+        calls.push(`deleteRef ${ref}`);
+      });
+    octokitMock.rest.pulls.list
+      .mockReset()
+      .mockImplementation(async ({ head }: { head: string }) => {
+        if (!head.startsWith(`${OWNER}:`))
+          throw new Error(`head must be "owner:branch", got "${head}"`);
+        const ref = head.slice(OWNER.length + 1);
+        return {
+          data: openPrs
+            .filter((p) => p.head === ref && (p.repo ?? REPO) === REPO)
+            .map(toPullsListItem),
+        };
+      });
+    octokitMock.rest.pulls.update
+      .mockReset()
+      .mockImplementation(async ({ pull_number }: { pull_number: number }) => {
+        calls.push(`close #${pull_number}`);
+      });
     octokitMock.rest.pulls.create.mockReset().mockImplementation(async () => {
       calls.push('create');
       return { data: { number: 300, html_url: 'https://github.com/octo-org/octo-repo/pull/300' } };
     });
-    octokitMock.rest.issues.createComment.mockReset().mockImplementation(
-      async ({ issue_number, body }: { issue_number: number; body: string }) => {
-        calls.push(`comment #${issue_number}: ${body}`);
-      },
-    );
+    octokitMock.rest.issues.createComment
+      .mockReset()
+      .mockImplementation(
+        async ({ issue_number, body }: { issue_number: number; body: string }) => {
+          calls.push(`comment #${issue_number}: ${body}`);
+        },
+      );
     octokitMock.rest.issues.addLabels.mockReset();
   });
 
   it('deletes legacy branches before pushing, whether or not they have an open PR', async () => {
-    remoteRefs = [`${BRANCH}/202606080746`, `${BRANCH}/202606220814`, `${BRANCH}-other`, 'chore/other'];
+    remoteRefs = [
+      `${BRANCH}/202606080746`,
+      `${BRANCH}/202606220814`,
+      `${BRANCH}-other`,
+      'chore/other',
+    ];
 
     await run();
 
@@ -168,7 +191,9 @@ describe('createPullRequest', () => {
       { number: 211, head: `${BRANCH}/202607200707`, repo: 'someone/octo-repo' },
       { number: 212, head: 'feature/unrelated' },
     ];
-    octokitMock.rest.pulls.list.mockImplementationOnce(async () => ({ data: openPrs.map(toPullsListItem) }));
+    octokitMock.rest.pulls.list.mockImplementationOnce(async () => ({
+      data: openPrs.map(toPullsListItem),
+    }));
 
     await run();
 
@@ -199,7 +224,9 @@ describe('createPullRequest', () => {
 
   it('stops before pushing when a legacy branch cannot be deleted', async () => {
     remoteRefs = [`${BRANCH}/202607200707`];
-    octokitMock.rest.git.deleteRef.mockRejectedValueOnce(new Error('Resource not accessible by integration'));
+    octokitMock.rest.git.deleteRef.mockRejectedValueOnce(
+      new Error('Resource not accessible by integration'),
+    );
 
     await expect(run()).rejects.toThrow(
       `Failed to remove superseded branch ${BRANCH}/202607200707, which blocks pushing ${BRANCH}: Resource not accessible by integration`,
@@ -220,7 +247,9 @@ describe('createPullRequest', () => {
       (err: unknown) => err as Error,
     );
 
-    expect(error.message).toContain(`git push to ${BRANCH} failed (exit 1): remote: error: cannot lock ref`);
+    expect(error.message).toContain(
+      `git push to ${BRANCH} failed (exit 1): remote: error: cannot lock ref`,
+    );
     expect(error.message).toContain('https://x-access-token:***@github.com');
     expect(error.message).not.toContain(TOKEN);
     expect(calls).not.toContain('create');

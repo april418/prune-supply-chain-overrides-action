@@ -96,7 +96,8 @@ class AgeBasedPruner implements Pruner {
     if (!parsed) {
       return {
         action: 'skip',
-        reason: 'not a package name, name pattern, or name@exact-versions entry that can be checked',
+        reason:
+          'not a package name, name pattern, or name@exact-versions entry that can be checked',
       };
     }
     if (!ctx.lockfile) {
@@ -119,8 +120,10 @@ class AgeBasedPruner implements Pruner {
     }
     if (resolved.size === 0) {
       let reason = 'package is no longer referenced from pnpm-lock.yaml';
-      if (parsed.isPattern) reason = 'no package matching the pattern is referenced from pnpm-lock.yaml';
-      if (parsed.versions.length > 0) reason = 'none of the listed versions is resolved in pnpm-lock.yaml';
+      if (parsed.isPattern)
+        reason = 'no package matching the pattern is referenced from pnpm-lock.yaml';
+      if (parsed.versions.length > 0)
+        reason = 'none of the listed versions is resolved in pnpm-lock.yaml';
       return { action: 'remove', reason };
     }
 

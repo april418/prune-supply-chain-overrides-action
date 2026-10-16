@@ -116,11 +116,15 @@ export async function run(): Promise<void> {
   await writeSummary(reports);
 
   if (inputs.dryRun) {
-    logger.info(`[dry-run] ${totalRemoved} entries would be removed across ${changedFiles.length} file(s).`);
+    logger.info(
+      `[dry-run] ${totalRemoved} entries would be removed across ${changedFiles.length} file(s).`,
+    );
     return;
   }
   if (!inputs.createPr) {
-    logger.info(`Wrote changes to ${changedFiles.length} file(s); create-pr is false so leaving them in the working tree.`);
+    logger.info(
+      `Wrote changes to ${changedFiles.length} file(s); create-pr is false so leaving them in the working tree.`,
+    );
     return;
   }
   if (!inputs.githubToken) {

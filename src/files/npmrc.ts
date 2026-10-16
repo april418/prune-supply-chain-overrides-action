@@ -48,7 +48,11 @@ export function readArrayKey(data: NpmrcData, key: string): string[] {
 }
 
 /** Remove all `key=value` / `key[]=value` lines where `value` is in `values`. */
-export function removeArrayValues(data: NpmrcData, key: string, values: Iterable<string>): string[] {
+export function removeArrayValues(
+  data: NpmrcData,
+  key: string,
+  values: Iterable<string>,
+): string[] {
   const prefix = `${key}=`;
   const arrayPrefix = `${key}[]=`;
   const targets = new Set(values);
