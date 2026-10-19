@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "GitHub Action that prunes stale supply-chain mitigation entries (minimumReleaseAgeExclude, overrides, trustPolicyExclude, onlyBuiltDependencies) from pnpm/npm projects.",
   "type": "module",
-  "packageManager": "pnpm@11.9.0",
+  "packageManager": "pnpm@11.28.5",
   "engines": {
     "node": ">=24.0.0"
   },
