@@ -13,13 +13,6 @@ onlyBuiltDependencies: []
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude: []
 
-# packageManager フィールドで指定したパッケージマネージャーと一致する
-# もののみ許容。packageManagerStrict は名前 (pnpm / yarn / npm) を、
-# packageManagerStrictVersion はバージョン (pnpm@10.33.0 等) を厳密一致
-# でチェックする。両方有効化して名前とバージョンの両方を固定する。
-packageManagerStrict: true
-packageManagerStrictVersion: true
-
 # 推移依存の脆弱性を直接バージョン指定で打ち消す上書き。
 # 解消後は本アクション自身が PR で剥がしてくれる予定 (dogfood)。
 overrides:
