@@ -6,6 +6,7 @@ import {
   isCollectionEmpty,
   removeKey,
 } from '../files/pnpm-workspace.js';
+import { OtherRegistryError } from '../registry/npm-registry.js';
 
 const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall'] as const;
 
@@ -76,6 +77,7 @@ async function evaluate(
     try {
       manifest = await ctx.registry.manifest(pkg, v);
     } catch (err) {
+      if (err instanceof OtherRegistryError) return { action: 'skip', reason: err.message };
       return {
         action: 'skip',
         reason: `failed to fetch manifest for ${pkg}@${v}: ${(err as Error).message}`,

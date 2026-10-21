@@ -7,7 +7,7 @@ import {
   trustPolicyExcludePruner,
 } from '../src/pruners/age-based.js';
 import { loadPnpmWorkspace } from '../src/files/pnpm-workspace.js';
-import { NpmRegistry } from '../src/registry/npm-registry.js';
+import { NpmRegistry, assertRegistryReachable } from '../src/registry/npm-registry.js';
 import { consoleLogger } from '../src/util/logger.js';
 import type { PrunerContext } from '../src/pruners/types.js';
 
@@ -239,6 +239,65 @@ describe('minimumReleaseAgeExclude pruner', () => {
         reason:
           'failed to fetch publish time for @next/third-parties@16.4.1: registry returned 503',
       },
+    ]);
+  });
+
+  it('keeps an entry installed from another registry without failing the run', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml:
+        "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '@octo-org/internal'\n",
+      lockfile: new Map([['@octo-org/internal', new Set(['0.1.0'])]]),
+      times: {},
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    ctx.registry = new NpmRegistry(
+      'https://registry.example',
+      (async () => {
+        throw new Error('unexpected request');
+      }) as typeof fetch,
+      new Map([['@octo-org', { url: 'https://npm.octo-org.example/', source: 'set in .npmrc' }]]),
+    );
+
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+
+    expect(report.removed).toHaveLength(0);
+    expect(report.skipped).toEqual([
+      {
+        key: '@octo-org/internal',
+        reason:
+          '@octo-org packages are installed from https://npm.octo-org.example/ (set in .npmrc), ' +
+          'so @octo-org/internal is not looked up in https://registry.example',
+      },
+    ]);
+    expect(() => assertRegistryReachable(ctx.registry.stats(), consoleLogger)).not.toThrow();
+  });
+
+  it('keeps a name pattern that also matches a package installed from another registry', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "minimumReleaseAge: 10080\nminimumReleaseAgeExclude:\n  - '*'\n",
+      lockfile: new Map([
+        ['old-pkg', new Set(['1.0.0'])],
+        ['@octo-org/internal', new Set(['0.1.0'])],
+      ]),
+      times: {},
+      now: new Date('2026-05-16T00:00:00Z'),
+    });
+    ctx.registry = new NpmRegistry(
+      'https://registry.example',
+      (async () =>
+        Response.json({
+          name: 'old-pkg',
+          time: { '1.0.0': '2020-01-01T00:00:00Z' },
+          versions: { '1.0.0': {} },
+        })) as typeof fetch,
+      new Map([['@octo-org', { url: 'https://npm.octo-org.example/', source: 'set in .npmrc' }]]),
+    );
+
+    const report = await minimumReleaseAgeExcludePruner.run(ctx);
+
+    expect(report.removed).toHaveLength(0);
+    expect(report.skipped).toEqual([
+      { key: '*', reason: expect.stringContaining('@octo-org/internal is not looked up') },
     ]);
   });
 

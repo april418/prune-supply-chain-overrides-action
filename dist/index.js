@@ -59695,18 +59695,42 @@ function asError(value) {
 ;// CONCATENATED MODULE: ./src/registry/npm-registry.ts
 
 
+/**
+ * Rejection for a package whose scope the project installs from a registry
+ * other than the one queried. No request is made, so it is not counted in
+ * {@link NpmRegistry.stats}.
+ */
+class OtherRegistryError extends PrunerError {
+    constructor(message) {
+        super(message);
+        this.name = 'OtherRegistryError';
+    }
+}
 class NpmRegistry {
     baseUrl;
     fetchImpl;
     packumentCache = new Map();
     manifestCache = new Map();
+    otherRegistries = new Map();
     succeeded = 0;
     failed = [];
-    constructor(baseUrl, fetchImpl = globalThis.fetch) {
+    /**
+     * Packages under a scope in `scopeRegistries` that routes to another
+     * registry are rejected with {@link OtherRegistryError} instead of fetched.
+     */
+    constructor(baseUrl, fetchImpl = globalThis.fetch, scopeRegistries = new Map()) {
         this.baseUrl = baseUrl;
         this.fetchImpl = fetchImpl;
+        for (const [scope, route] of scopeRegistries) {
+            if (normalizeRegistryUrl(route.url) !== normalizeRegistryUrl(baseUrl)) {
+                this.otherRegistries.set(scope, route);
+            }
+        }
     }
     packument(name) {
+        const elsewhere = this.otherRegistryError(name);
+        if (elsewhere)
+            return Promise.reject(elsewhere);
         const cached = this.packumentCache.get(name);
         if (cached)
             return cached;
@@ -59732,6 +59756,9 @@ class NpmRegistry {
     }
     /** Fetch a single-version manifest. */
     manifest(name, version) {
+        const elsewhere = this.otherRegistryError(name);
+        if (elsewhere)
+            return Promise.reject(elsewhere);
         const cacheKey = `${name}@${version}`;
         const cached = this.manifestCache.get(cacheKey);
         if (cached)
@@ -59753,6 +59780,17 @@ class NpmRegistry {
     }
     stats() {
         return { succeeded: this.succeeded, failed: [...this.failed] };
+    }
+    otherRegistryError(name) {
+        const slash = name.indexOf('/');
+        if (!name.startsWith('@') || slash === -1)
+            return null;
+        const scope = name.slice(0, slash);
+        const route = this.otherRegistries.get(scope);
+        if (!route)
+            return null;
+        return new OtherRegistryError(`${scope} packages are installed from ${withoutUserinfo(route.url)} (${route.source}), ` +
+            `so ${name} is not looked up in ${this.baseUrl}`);
     }
     track(request) {
         request.then(() => {
@@ -59808,10 +59846,37 @@ function assertRegistryReachable(stats, logger) {
         return;
     if (succeeded === 0) {
         throw new Error(`All ${failed.length} npm registry request(s) failed, so no entry could be verified. ` +
-            `First error: ${failed[0]}`);
+            `First error: ${failed[0]}. ` +
+            `If these packages are installed from another registry, route their scope to it in ` +
+            `the project's .npmrc (@scope:registry=) or pnpm-workspace.yaml (registries) so that ` +
+            `they are not looked up here, or set the registry input to the registry that serves them.`);
     }
     logger.warn(`${failed.length} npm registry request(s) failed; the affected entries were kept. ` +
         `First error: ${failed[0]}`);
+}
+/** Origin and path without trailing slashes, so that spellings of one registry compare equal. */
+function normalizeRegistryUrl(url) {
+    try {
+        const parsed = new URL(url);
+        return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
+    }
+    catch {
+        return url.replace(/\/+$/, '');
+    }
+}
+/** Skip reasons go into the PR body, where credentials in a registry URL must not appear. */
+function withoutUserinfo(url) {
+    try {
+        const parsed = new URL(url);
+        if (!parsed.username && !parsed.password)
+            return url;
+        parsed.username = '';
+        parsed.password = '';
+        return parsed.href;
+    }
+    catch {
+        return url;
+    }
 }
 function encodePackageName(name) {
     if (name.startsWith('@')) {
@@ -59823,8 +59888,72 @@ function encodePackageName(name) {
     return encodeURIComponent(name);
 }
 
+// EXTERNAL MODULE: ./node_modules/.pnpm/ini@5.0.0/node_modules/ini/lib/ini.js
+var ini = __nccwpck_require__(5153);
 // EXTERNAL MODULE: ./node_modules/.pnpm/yaml@2.8.4/node_modules/yaml/dist/index.js
 var dist = __nccwpck_require__(8950);
+;// CONCATENATED MODULE: ./src/registry/scope-registries.ts
+
+
+/**
+ * Registry per `@scope` as the project configures it, in pnpm's precedence:
+ * pnpm's built-in `@jsr` route, then `@scope:registry=` in .npmrc, then
+ * `registries` in pnpm-workspace.yaml. User-level config such as ~/.npmrc is
+ * not read, and routes for the default registry are ignored.
+ */
+function readScopeRegistries(npmrc, workspace) {
+    const routes = new Map([
+        ['@jsr', { url: 'https://npm.jsr.io/', source: 'pnpm built-in' }],
+    ]);
+    if (npmrc) {
+        for (const [key, value] of Object.entries((0,ini.parse)(npmrc.raw))) {
+            const scope = /^(@[^:]+):registry$/.exec(key)?.[1];
+            // pnpm 11 drops a project .npmrc registry URL with an env placeholder
+            // and installs from the default registry instead.
+            if (scope !== undefined && typeof value === 'string' && !/\$\{[^}]+\}/.test(value)) {
+                routes.set(scope, { url: value, source: 'set in .npmrc' });
+            }
+        }
+    }
+    const node = workspace?.document.get('registries', true);
+    if (workspace && (0,dist/* isMap */.jh)(node)) {
+        // Only this node is converted: the whole document may hold aliases that
+        // yaml's alias-count limit rejects, which would fail the run for nothing.
+        for (const [scope, url] of workspaceRoutes(node.toJS(workspace.document))) {
+            routes.set(scope, { url, source: 'set in pnpm-workspace.yaml' });
+        }
+    }
+    return routes;
+}
+/**
+ * pnpm accepts two shapes for `registries`: `{ '@scope': url }`, and since
+ * v11.23 `{ [url]: { scopes: ['@scope'] } }`. Each entry is read by its own
+ * shape, since pnpm rejects a map that mixes them anyway.
+ */
+function* workspaceRoutes(registries) {
+    if (!isRecord(registries))
+        return;
+    for (const [key, value] of Object.entries(registries)) {
+        if (typeof value === 'string') {
+            if (isScope(key))
+                yield [key, value];
+        }
+        else if (isRecord(value) && Array.isArray(value.scopes)) {
+            for (const scope of value.scopes) {
+                if (typeof scope === 'string' && isScope(scope))
+                    yield [scope, key];
+            }
+        }
+    }
+}
+/** `@` alone names the default registry in `scopes`, and no package's scope elsewhere. */
+function isScope(value) {
+    return value.startsWith('@') && value.length > 1;
+}
+function isRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 ;// CONCATENATED MODULE: ./src/files/pnpm-workspace.ts
 
 
@@ -60311,8 +60440,6 @@ function removeArrayValues(data, key, values) {
     return removed;
 }
 
-// EXTERNAL MODULE: ./node_modules/.pnpm/ini@5.0.0/node_modules/ini/lib/ini.js
-var ini = __nccwpck_require__(5153);
 ;// CONCATENATED MODULE: ./src/lockfile/pnpm-lockfile.ts
 
 
@@ -61059,6 +61186,7 @@ function escapeRegExp(text) {
 
 
 
+
 // A pattern such as `*` can match every package in the lockfile; unbounded,
 // that is one simultaneous registry request per package.
 const REGISTRY_CONCURRENCY = 8;
@@ -61164,6 +61292,8 @@ class AgeBasedPruner {
                     publishedAt = await ctx.registry.publishTime(name, version);
                 }
                 catch (err) {
+                    if (err instanceof OtherRegistryError)
+                        return err.message;
                     return `failed to fetch publish time for ${name}@${version}: ${err.message}`;
                 }
                 if (!publishedAt)
@@ -61199,6 +61329,7 @@ const trustPolicyExcludePruner = new AgeBasedPruner({
 });
 
 ;// CONCATENATED MODULE: ./src/pruners/only-built-dependencies.ts
+
 
 const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall'];
 /**
@@ -61262,6 +61393,8 @@ async function evaluate(pkg, ctx) {
             manifest = await ctx.registry.manifest(pkg, v);
         }
         catch (err) {
+            if (err instanceof OtherRegistryError)
+                return { action: 'skip', reason: err.message };
             return {
                 action: 'skip',
                 reason: `failed to fetch manifest for ${pkg}@${v}: ${err.message}`,
@@ -61591,6 +61724,7 @@ async function resolveDefaultBranch(token, cwd, logger) {
 
 
 
+
 const REGISTRY = {
     minimumReleaseAgeExclude: minimumReleaseAgeExcludePruner,
     trustPolicyExclude: trustPolicyExcludePruner,
@@ -61618,7 +61752,7 @@ async function run() {
     const ctx = {
         cwd,
         packageManager,
-        registry: new NpmRegistry(inputs.registry),
+        registry: new NpmRegistry(inputs.registry, globalThis.fetch, readScopeRegistries(npmrc, workspace)),
         workspace,
         packageJson,
         npmrc,

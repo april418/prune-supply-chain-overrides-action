@@ -3,6 +3,7 @@ import * as core from '@actions/core';
 import { detectPackageManager, readActionInputs } from './config.js';
 import { actionsLogger } from './util/logger.js';
 import { NpmRegistry, assertRegistryReachable } from './registry/npm-registry.js';
+import { readScopeRegistries } from './registry/scope-registries.js';
 import { loadPnpmWorkspace, savePnpmWorkspace } from './files/pnpm-workspace.js';
 import { loadPackageJson, savePackageJson } from './files/package-json.js';
 import { loadNpmrc, saveNpmrc } from './files/npmrc.js';
@@ -51,7 +52,11 @@ export async function run(): Promise<void> {
   const ctx: PrunerContext = {
     cwd,
     packageManager,
-    registry: new NpmRegistry(inputs.registry),
+    registry: new NpmRegistry(
+      inputs.registry,
+      globalThis.fetch,
+      readScopeRegistries(npmrc, workspace),
+    ),
     workspace,
     packageJson,
     npmrc,
