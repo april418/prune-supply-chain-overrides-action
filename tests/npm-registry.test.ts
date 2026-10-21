@@ -140,6 +140,6 @@ describe('assertRegistryReachable', () => {
   it('throws when every request failed', () => {
     expect(() =>
       assertRegistryReachable({ succeeded: 0, failed: ['a failed', 'b failed'] }, consoleLogger),
-    ).toThrow(/All 2 npm registry request\(s\) failed.*a failed/);
+    ).toThrow(/All 2 npm registry request\(s\) failed.*a failed.*route their scope/);
   });
 });

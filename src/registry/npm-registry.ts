@@ -204,7 +204,10 @@ export function assertRegistryReachable(stats: RegistryStats, logger: Logger): v
   if (succeeded === 0) {
     throw new Error(
       `All ${failed.length} npm registry request(s) failed, so no entry could be verified. ` +
-        `First error: ${failed[0]}`,
+        `First error: ${failed[0]}. ` +
+        `If these packages are installed from another registry, route their scope to it in ` +
+        `the project's .npmrc (@scope:registry=) or pnpm-workspace.yaml (registries) so that ` +
+        `they are not looked up here, or set the registry input to the registry that serves them.`,
     );
   }
   logger.warn(
