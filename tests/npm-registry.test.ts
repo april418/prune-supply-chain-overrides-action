@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { NpmRegistry, assertRegistryReachable } from '../src/registry/npm-registry.js';
+import {
+  NpmRegistry,
+  OtherRegistryError,
+  assertRegistryReachable,
+} from '../src/registry/npm-registry.js';
 import { consoleLogger } from '../src/util/logger.js';
 
 /** A fetch stand-in that answers only for package names in `ok`. */
@@ -24,6 +28,80 @@ describe('NpmRegistry request stats', () => {
     expect(stats.succeeded).toBe(1);
     expect(stats.failed).toHaveLength(1);
     expect(stats.failed[0]).toMatch(/Failed to fetch packument for bad/);
+  });
+});
+
+describe('NpmRegistry scope routes', () => {
+  /** Answers every request with an empty packument and records the URLs. */
+  function recordingFetch(urls: string[]): typeof fetch {
+    return (async (input: string | URL | Request) => {
+      urls.push(String(input));
+      return Response.json({ name: 'pkg', time: {}, versions: {} });
+    }) as typeof fetch;
+  }
+
+  it('does not request packages whose scope is installed from another registry', async () => {
+    const urls: string[] = [];
+    const registry = new NpmRegistry(
+      'https://registry.example',
+      recordingFetch(urls),
+      new Map([['@octo-org', { url: 'https://npm.octo-org.example/', source: 'set in .npmrc' }]]),
+    );
+
+    const message =
+      '@octo-org packages are installed from https://npm.octo-org.example/ (set in .npmrc), ' +
+      'so @octo-org/lib is not looked up in https://registry.example';
+    for (const request of [
+      () => registry.publishTime('@octo-org/lib', '1.0.0'),
+      () => registry.manifest('@octo-org/lib', '1.0.0'),
+    ]) {
+      await expect(request()).rejects.toBeInstanceOf(OtherRegistryError);
+      await expect(request()).rejects.toThrow(message);
+    }
+    await registry.publishTime('@octo-org-public/lib', '1.0.0');
+    await registry.publishTime('octo-org', '1.0.0');
+
+    expect(urls).toEqual([
+      'https://registry.example/%40octo-org-public/lib',
+      'https://registry.example/octo-org',
+    ]);
+    expect(registry.stats()).toEqual({ succeeded: 2, failed: [] });
+  });
+
+  it('requests a scope routed to the queried registry however its URL is spelled', async () => {
+    const urls: string[] = [];
+    const registry = new NpmRegistry(
+      'https://registry.example',
+      recordingFetch(urls),
+      new Map([
+        [
+          '@octo-org',
+          { url: 'https://REGISTRY.example:443/', source: 'set in pnpm-workspace.yaml' },
+        ],
+      ]),
+    );
+
+    await registry.publishTime('@octo-org/lib', '1.0.0');
+
+    expect(urls).toEqual(['https://registry.example/%40octo-org/lib']);
+  });
+
+  it('leaves credentials in the route URL out of the rejection', async () => {
+    const registry = new NpmRegistry(
+      'https://registry.example',
+      recordingFetch([]),
+      new Map([
+        [
+          '@octo-org',
+          { url: 'https://bot:s3cret@npm.octo-org.example/npm/', source: 'set in .npmrc' },
+        ],
+      ]),
+    );
+
+    const rejection = registry.publishTime('@octo-org/lib', '1.0.0');
+
+    await expect(rejection).rejects.toThrow('installed from https://npm.octo-org.example/npm/ (');
+    await expect(rejection).rejects.not.toThrow('s3cret');
   });
 });
 

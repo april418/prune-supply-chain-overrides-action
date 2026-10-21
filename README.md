@@ -31,6 +31,16 @@ If some npm registry requests fail, the action logs a warning and keeps the
 affected entries. If every request fails, the action fails instead of
 reporting that nothing needs pruning, since no entry could be verified.
 
+Packages whose scope the project installs from another registry are not looked
+up in `registry`: the entries that cover them are kept, and no request is made
+or counted as failed. The action reads these routes from `@scope:registry=` in
+the project's `.npmrc` and from `registries` in `pnpm-workspace.yaml`, on top of
+pnpm's built-in route for `@jsr` (`https://npm.jsr.io/`). Like pnpm 11, it
+ignores a `.npmrc` route whose URL contains an environment variable placeholder.
+Routes set only in user-level config (`~/.npmrc`, pnpm's global config, or the
+file `actions/setup-node` writes for `registry-url`) are not read, so those
+packages are still looked up in `registry`.
+
 ## Usage
 
 ```yaml
@@ -129,7 +139,7 @@ to `github-token`:
 | `working-directory` | `.` | Path to the project root. |
 | `targets` | all | Comma-separated subset of `minimumReleaseAgeExclude,overrides,trustPolicyExclude,onlyBuiltDependencies`. |
 | `package-manager` | `auto` | `auto` (detect), `pnpm`, or `npm`. |
-| `registry` | `https://registry.npmjs.org` | npm registry to query for publish times and manifests. |
+| `registry` | `https://registry.npmjs.org` | npm registry to query for publish times and manifests. Scopes the project routes to another registry are not queried (see [What gets pruned](#what-gets-pruned)). |
 | `dry-run` | `false` | When `true`, do not create a PR or leave changes behind. The report is still emitted, and the lockfile is still regenerated and verified (see below) before the files are restored. |
 | `create-pr` | `true` | When `false`, leave changes in the working tree without opening a PR. |
 | `pr-branch` | `chore/prune-supply-chain-overrides` | Branch name for the PR. Reused on every run — see [Repeated runs](#repeated-runs-and-open-prs). |

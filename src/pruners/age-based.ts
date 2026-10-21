@@ -10,6 +10,7 @@ import {
 import { formatMinutes } from '../util/format.js';
 import { findFirst } from '../util/concurrency.js';
 import { parseExcludeEntry } from './exclude-entry.js';
+import { OtherRegistryError } from '../registry/npm-registry.js';
 
 // A pattern such as `*` can match every package in the lockfile; unbounded,
 // that is one simultaneous registry request per package.
@@ -136,6 +137,7 @@ class AgeBasedPruner implements Pruner {
         try {
           publishedAt = await ctx.registry.publishTime(name, version);
         } catch (err) {
+          if (err instanceof OtherRegistryError) return err.message;
           return `failed to fetch publish time for ${name}@${version}: ${(err as Error).message}`;
         }
         if (!publishedAt) return `npm registry has no publish time for ${name}@${version}`;

@@ -61,6 +61,38 @@ describe('onlyBuiltDependencies pruner', () => {
     expect(report.skipped.map((e) => e.key)).toEqual(['esbuild']);
   });
 
+  it('keeps a package installed from another registry', async () => {
+    const ctx = await setupCtx({
+      workspaceYaml: "onlyBuiltDependencies:\n  - '@octo-org/native'\n",
+      lockfile: new Map([['@octo-org/native', new Set(['1.0.0'])]]),
+    });
+    ctx.registry = new NpmRegistry(
+      'https://registry.example',
+      (async () => {
+        throw new Error('unexpected request');
+      }) as typeof fetch,
+      new Map([
+        [
+          '@octo-org',
+          { url: 'https://npm.octo-org.example/', source: 'set in pnpm-workspace.yaml' },
+        ],
+      ]),
+    );
+
+    const report = await onlyBuiltDependenciesPruner.run(ctx);
+
+    expect(report.removed).toHaveLength(0);
+    expect(report.skipped).toEqual([
+      {
+        key: '@octo-org/native',
+        reason:
+          '@octo-org packages are installed from https://npm.octo-org.example/ ' +
+          '(set in pnpm-workspace.yaml), so @octo-org/native is not looked up in https://registry.example',
+      },
+    ]);
+    expect(ctx.registry.stats()).toEqual({ succeeded: 0, failed: [] });
+  });
+
   it('keeps every entry when there is no lockfile', async () => {
     const ctx = await setupCtx({
       workspaceYaml: 'onlyBuiltDependencies:\n  - esbuild\n  - ghost-pkg\n',

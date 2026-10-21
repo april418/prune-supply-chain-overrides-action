@@ -1,6 +1,7 @@
 import semver from 'semver';
 import { PrunerError, asError } from '../util/errors.js';
 import type { Logger } from '../util/logger.js';
+import type { ScopeRegistry } from './scope-registries.js';
 
 /** Subset of an npm packument we care about. */
 export interface Packument {
@@ -34,18 +35,44 @@ export interface RegistryStats {
   failed: string[];
 }
 
+/**
+ * Rejection for a package whose scope the project installs from a registry
+ * other than the one queried. No request is made, so it is not counted in
+ * {@link NpmRegistry.stats}.
+ */
+export class OtherRegistryError extends PrunerError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OtherRegistryError';
+  }
+}
+
 export class NpmRegistry {
   private readonly packumentCache = new Map<string, Promise<Packument>>();
   private readonly manifestCache = new Map<string, Promise<VersionManifest>>();
+  private readonly otherRegistries = new Map<string, ScopeRegistry>();
   private succeeded = 0;
   private readonly failed: string[] = [];
 
+  /**
+   * Packages under a scope in `scopeRegistries` that routes to another
+   * registry are rejected with {@link OtherRegistryError} instead of fetched.
+   */
   constructor(
     private readonly baseUrl: string,
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
-  ) {}
+    scopeRegistries: ReadonlyMap<string, ScopeRegistry> = new Map(),
+  ) {
+    for (const [scope, route] of scopeRegistries) {
+      if (normalizeRegistryUrl(route.url) !== normalizeRegistryUrl(baseUrl)) {
+        this.otherRegistries.set(scope, route);
+      }
+    }
+  }
 
   packument(name: string): Promise<Packument> {
+    const elsewhere = this.otherRegistryError(name);
+    if (elsewhere) return Promise.reject(elsewhere);
     const cached = this.packumentCache.get(name);
     if (cached) return cached;
     const url = `${this.baseUrl.replace(/\/$/, '')}/${encodePackageName(name)}`;
@@ -74,6 +101,8 @@ export class NpmRegistry {
 
   /** Fetch a single-version manifest. */
   manifest(name: string, version: string): Promise<VersionManifest> {
+    const elsewhere = this.otherRegistryError(name);
+    if (elsewhere) return Promise.reject(elsewhere);
     const cacheKey = `${name}@${version}`;
     const cached = this.manifestCache.get(cacheKey);
     if (cached) return cached;
@@ -98,6 +127,18 @@ export class NpmRegistry {
 
   stats(): RegistryStats {
     return { succeeded: this.succeeded, failed: [...this.failed] };
+  }
+
+  private otherRegistryError(name: string): OtherRegistryError | null {
+    const slash = name.indexOf('/');
+    if (!name.startsWith('@') || slash === -1) return null;
+    const scope = name.slice(0, slash);
+    const route = this.otherRegistries.get(scope);
+    if (!route) return null;
+    return new OtherRegistryError(
+      `${scope} packages are installed from ${withoutUserinfo(route.url)} (${route.source}), ` +
+        `so ${name} is not looked up in ${this.baseUrl}`,
+    );
   }
 
   private track(request: Promise<unknown>): void {
@@ -170,6 +211,29 @@ export function assertRegistryReachable(stats: RegistryStats, logger: Logger): v
     `${failed.length} npm registry request(s) failed; the affected entries were kept. ` +
       `First error: ${failed[0]}`,
   );
+}
+
+/** Origin and path without trailing slashes, so that spellings of one registry compare equal. */
+function normalizeRegistryUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return url.replace(/\/+$/, '');
+  }
+}
+
+/** Skip reasons go into the PR body, where credentials in a registry URL must not appear. */
+function withoutUserinfo(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) return url;
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.href;
+  } catch {
+    return url;
+  }
 }
 
 function encodePackageName(name: string): string {
