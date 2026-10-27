@@ -86,9 +86,34 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
   const localTree = (
     await getExecOutput('git', ['rev-parse', 'HEAD^{tree}'], { cwd, silent: true })
   ).stdout.trim();
+  const existing = await octokit.rest.pulls.list({
+    owner,
+    repo,
+    head: `${owner}:${branch}`,
+    state: 'open',
+  });
+  const openPr = existing.data.find(
+    (p) => p.head.ref === branch && p.head.repo?.full_name === `${owner}/${repo}`,
+  );
   if (remote && remote.tree === localTree) {
     logger.info(`Branch ${branch} already has these changes; skipping push.`);
   } else {
+    // Without an open PR nobody is reviewing the branch: its PR was merged or
+    // closed, or was never opened.
+    if (remote && openPr) {
+      const manual = await findManualCommits(octokit, cwd, branch, remote.sha);
+      if (manual.total > 0) {
+        await reportManualCommits(octokit, {
+          branch,
+          head: remote.sha,
+          pr: openPr,
+          manual,
+          reports,
+          logger,
+        });
+        return { number: openPr.number, url: openPr.html_url };
+      }
+    }
     // silent keeps the token-bearing URL out of the log, which also hides
     // git's stderr, so it is surfaced through the thrown error instead.
     const pushed = await getExecOutput(
@@ -108,16 +133,9 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
     }
   }
 
-  const existing = await octokit.rest.pulls.list({
-    owner,
-    repo,
-    head: `${owner}:${branch}`,
-    state: 'open',
-  });
-
   let pr: { number: number; html_url: string };
-  if (existing.data.length > 0) {
-    pr = existing.data[0]!;
+  if (openPr) {
+    pr = openPr;
     await octokit.rest.pulls.update({
       owner,
       repo,
@@ -260,6 +278,143 @@ async function commentOnSupersededPullRequests(
   }
 }
 
+interface ManualCommits {
+  total: number;
+  listed: { sha: string; subject: string; author: string }[];
+}
+
+const MAX_LISTED_COMMITS = 10;
+
+/**
+ * Finds the commits on `head` that this action did not create, i.e. the ones
+ * that force-pushing `HEAD` would drop. A run pushes a single commit on top of
+ * the checked-out commit, so only the oldest of them can be the action's, and
+ * only when its author and committer match `HEAD`'s.
+ */
+async function findManualCommits(
+  octokit: Octokit,
+  cwd: string,
+  branch: string,
+  head: string,
+): Promise<ManualCommits> {
+  const { owner, repo } = github.context.repo;
+  // NUL-separated so that an empty email cannot shift the fields.
+  const own = await getExecOutput('git', ['show', '-s', '--format=%P%x00%ae%x00%ce%x00', 'HEAD'], {
+    cwd,
+    silent: true,
+  });
+  const [parents = '', authorEmail, committerEmail] = own.stdout.split('\0');
+  const parent = parents.split(' ')[0];
+  let compared;
+  try {
+    // Without paging parameters the API returns the newest 250 commits; with
+    // per_page it starts from the oldest, which is where the action's commit is.
+    compared = await octokit.rest.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead: `${parent}...${head}`,
+      per_page: MAX_LISTED_COMMITS + 1,
+    });
+  } catch (err) {
+    throw new Error(
+      `Failed to list the commits on ${branch} that pushing would drop: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  const { commits, total_commits: total } = compared.data;
+  const [first] = commits;
+  const ownsFirst =
+    first !== undefined &&
+    first.commit.author?.email === authorEmail &&
+    first.commit.committer?.email === committerEmail;
+  const manual = ownsFirst ? commits.slice(1) : commits;
+  return {
+    total: ownsFirst ? total - 1 : total,
+    listed: manual.slice(0, MAX_LISTED_COMMITS).map((c) => ({
+      sha: c.sha,
+      subject: c.commit.message.split('\n')[0] ?? '',
+      author: c.author?.login ?? c.commit.author?.name ?? 'unknown',
+    })),
+  };
+}
+
+async function reportManualCommits(
+  octokit: Octokit,
+  opts: {
+    branch: string;
+    head: string;
+    pr: { number: number };
+    manual: ManualCommits;
+    reports: PrunerReport[];
+    logger: Logger;
+  },
+): Promise<void> {
+  const { branch, head, pr, manual, logger } = opts;
+  const { owner, repo } = github.context.repo;
+  logger.warn(
+    `Did not update ${branch}: it has ${manual.total} commit(s) that this action did not create, and PR #${pr.number} is still open. Merge or close the PR to let the next run update the branch.`,
+  );
+
+  // Only this comment tells the PR's reviewers why the PR stopped updating,
+  // so failing to post it fails the run.
+  try {
+    // Scheduled runs keep hitting the same branch until the PR is merged or
+    // closed, so comment once per branch head instead of on every run.
+    const marker = `<!-- prune-supply-chain-overrides-action:manual-commits ${head} -->`;
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+      owner,
+      repo,
+      issue_number: pr.number,
+    });
+    if (comments.some((c) => c.body?.includes(marker))) {
+      logger.info(`PR #${pr.number} already has a comment about ${head}; not commenting again.`);
+      return;
+    }
+
+    const lines = [
+      marker,
+      `This run did not update \`${branch}\`, because the branch has commits that this action did not create:`,
+      '',
+      ...manual.listed.map((c) => `- ${c.sha.slice(0, 7)} ${codeSpan(c.subject)} (${c.author})`),
+    ];
+    if (manual.total > manual.listed.length) {
+      lines.push(`- …and ${manual.total - manual.listed.length} more`);
+    }
+    lines.push(
+      '',
+      'Pushing the new prune result would force-push over them, so this pull request keeps the result of an earlier run.',
+      `Once this pull request is merged or closed, the next run that finds entries to prune starts \`${branch}\` over and opens a new pull request.`,
+      '',
+      '<details><summary>Result of this run</summary>',
+      '',
+      ...renderReportLines(opts.reports),
+      '</details>',
+    );
+    await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: pr.number,
+      body: lines.join('\n'),
+    });
+  } catch (err) {
+    throw new Error(
+      `Failed to comment on PR #${pr.number} about the commits that keep ${branch} from being updated: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+// A code span keeps @mentions and #references in commit subjects from
+// notifying people or adding cross-references to other issues.
+function codeSpan(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(longest + 1);
+  const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
+
 function redact(text: string, secret: string): string {
   return secret ? text.split(secret).join('***') : text;
 }
@@ -278,7 +433,12 @@ export function renderBody(reports: PrunerReport[], header?: string): string {
     'Entries below were originally added as supply-chain mitigations and have since become unnecessary, so the action removed them.',
   );
   lines.push('');
+  lines.push(...renderReportLines(reports));
+  return lines.join('\n');
+}
 
+function renderReportLines(reports: PrunerReport[]): string[] {
+  const lines: string[] = [];
   for (const report of reports) {
     if (report.removed.length === 0 && report.skipped.length === 0) continue;
     lines.push(`### ${report.pruner}`);
@@ -304,7 +464,7 @@ export function renderBody(reports: PrunerReport[], header?: string): string {
       lines.push('');
     }
   }
-  return lines.join('\n');
+  return lines;
 }
 
 export function summarizeRemovals(reports: PrunerReport[]): PrunedEntry[] {
