@@ -155,7 +155,7 @@ to `github-token`:
 | --- | --- |
 | `changed` | `true` when at least one entry was pruned. |
 | `pruned` | JSON report grouped by pruner (matches the PR body). |
-| `pr-number` | Number of the opened PR, when `create-pr` is `true`. |
+| `pr-number` | Number of the opened PR, when `create-pr` is `true`. Also set when the open PR is left as it is because of someone else's commits. |
 | `pr-url` | URL of the opened PR. |
 
 ### Repeated runs and open PRs
@@ -167,8 +167,21 @@ up duplicate pull requests. When a previous run's PR is still open:
   the current base branch), and the PR title and body are updated in place.
 - If the new result is identical to what the branch already contains, the push
   is skipped so the PR is not churned with no-op commits.
-- Manual commits pushed onto the PR branch are overwritten on the next run —
-  treat the PR as machine-owned and put manual fixes in a separate branch.
+- If someone has pushed commits onto the PR branch (e.g. rebuilt files that
+  depend on the lockfile), the branch is left as it is. The run succeeds with a
+  warning and comments on the PR with those commits and the new prune result,
+  once per branch head; if the comment cannot be posted, the run fails instead,
+  still without pushing. The PR title, body and labels keep the earlier result.
+  Merge or close the PR to let the next run that finds entries to prune start
+  the branch over.
+
+To tell the commits apart, the run looks at the commits on the branch that the
+checked-out commit does not contain, i.e. the ones a force-push would drop.
+Only the oldest of them can be the action's own, and only when its author and
+committer emails match the commit the run has just made. Every other one,
+including a merge from **Update branch** or a rewrite of the action's commit,
+counts as someone else's. Without an open PR, the branch is force-pushed
+whatever it contains: its PR has been merged or closed, or was never opened.
 
 Versions up to v1.0.4 pushed to `<pr-branch>/<YYYYMMDDHHMM>` instead. Git
 cannot create `<pr-branch>` while any branch exists under `<pr-branch>/`, so
