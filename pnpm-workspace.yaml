@@ -8,6 +8,10 @@
 # は明示的に許可したものだけ実行する。空配列 = 全ブロック。
 onlyBuiltDependencies: []
 
+# install 時に lifecycle script を一切実行しない (自身の package.json の
+# ものも含む)。pnpm build のように名前を指定した pnpm run は対象外。
+ignoreScripts: true
+
 # 新規公開パッケージは 7 日 (10080 分) 経過するまでインストールしない。
 # 直近に公開された悪意あるバージョンの取り込みを防ぐ。
 minimumReleaseAge: 10080
@@ -32,6 +36,9 @@ overrides:
 # peer dependency のミスマッチを警告ではなくエラーにする。
 strictPeerDependencies: true
 
+# package.json の engines.node を満たさない Node での install を止める。
+engineStrict: true
+
 # 中間依存で git / file / http URL 等の exotic ソースを使わせない。
 blockExoticSubdeps: true
 
@@ -45,3 +52,9 @@ verifyDepsBeforeRun: error
 trustPolicy: no-downgrade
 trustPolicyExclude: []
 trustPolicyIgnoreAfter: 10080
+
+# pnpm audit は high 以上の脆弱性があるときだけ失敗させる。
+auditLevel: high
+
+# pnpm add で依存を ^ なしの完全一致で書く。
+savePrefix: ''
