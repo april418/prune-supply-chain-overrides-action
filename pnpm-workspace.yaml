@@ -8,17 +8,14 @@
 # は明示的に許可したものだけ実行する。空配列 = 全ブロック。
 onlyBuiltDependencies: []
 
+# install 時に lifecycle script を一切実行しない (自身の package.json の
+# ものも含む)。pnpm build のように名前を指定した pnpm run は対象外。
+ignoreScripts: true
+
 # 新規公開パッケージは 7 日 (10080 分) 経過するまでインストールしない。
 # 直近に公開された悪意あるバージョンの取り込みを防ぐ。
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude: []
-
-# packageManager フィールドで指定したパッケージマネージャーと一致する
-# もののみ許容。packageManagerStrict は名前 (pnpm / yarn / npm) を、
-# packageManagerStrictVersion はバージョン (pnpm@10.33.0 等) を厳密一致
-# でチェックする。両方有効化して名前とバージョンの両方を固定する。
-packageManagerStrict: true
-packageManagerStrictVersion: true
 
 # 推移依存の脆弱性を直接バージョン指定で打ち消す上書き。
 # 解消後は本アクション自身が PR で剥がしてくれる予定 (dogfood)。
@@ -39,6 +36,9 @@ overrides:
 # peer dependency のミスマッチを警告ではなくエラーにする。
 strictPeerDependencies: true
 
+# package.json の engines.node を満たさない Node での install を止める。
+engineStrict: true
+
 # 中間依存で git / file / http URL 等の exotic ソースを使わせない。
 blockExoticSubdeps: true
 
@@ -52,3 +52,9 @@ verifyDepsBeforeRun: error
 trustPolicy: no-downgrade
 trustPolicyExclude: []
 trustPolicyIgnoreAfter: 10080
+
+# pnpm audit は high 以上の脆弱性があるときだけ失敗させる。
+auditLevel: high
+
+# pnpm add で依存を ^ なしの完全一致で書く。
+savePrefix: ''
