@@ -66066,8 +66066,13 @@ async function hasChanges(cwd) {
     const out = await getExecOutput('git', ['status', '--porcelain'], { cwd, silent: true });
     return out.stdout.trim().length > 0;
 }
+// actions/checkout persists its token as an Authorization header for this host,
+// and git sends it in preference to the token in the remote URL. A push would
+// then run as GITHUB_TOKEN, which does not trigger workflows on the pull
+// request. An empty value resets the header list.
+const IGNORE_CHECKOUT_AUTH = ['-c', 'http.https://github.com/.extraheader='];
 async function fetchRemoteBranch(cwd, remoteUrl, branch) {
-    const fetched = await (0,exec.getExecOutput)('git', ['fetch', '--no-tags', remoteUrl, `refs/heads/${branch}`], {
+    const fetched = await (0,exec.getExecOutput)('git', [...IGNORE_CHECKOUT_AUTH, 'fetch', '--no-tags', remoteUrl, `refs/heads/${branch}`], {
         cwd,
         silent: true,
         ignoreReturnCode: true,
@@ -66129,6 +66134,7 @@ async function createPullRequest(opts) {
         // silent keeps the token-bearing URL out of the log, which also hides
         // git's stderr, so it is surfaced through the thrown error instead.
         const pushed = await (0,exec.getExecOutput)('git', [
+            ...IGNORE_CHECKOUT_AUTH,
             'push',
             `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`,
             remoteUrl,
