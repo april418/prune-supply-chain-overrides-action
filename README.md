@@ -92,8 +92,9 @@ For npm projects the same happens with `npm install --package-lock-only` and
 
 ### Required repository settings
 
-This action opens a pull request with `GITHUB_TOKEN`, so the consumer
-repository must allow GitHub Actions to do so. This is a **repository-level
+By default this action opens a pull request with `GITHUB_TOKEN`, so the consumer
+repository must allow GitHub Actions to do so (not needed when `github-token` is
+an App token or a PAT; see below). This is a **repository-level
 gate** that is independent of the workflow-level `permissions:` block — even
 with `pull-requests: write` declared, PR creation fails with
 `GitHub Actions is not permitted to create or approve pull requests` until the
@@ -131,6 +132,35 @@ to `github-token`:
   and mint an ephemeral token in the workflow via
   [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token).
   The PR will be authored by `<your-app>[bot]`.
+
+#### Running CI on the pull request
+
+Pushes and pull requests made with `GITHUB_TOKEN` do not start workflows, so a
+pull request opened with the default token gets no checks. If the base branch
+requires status checks, it cannot be merged without bypassing them. Pass a
+GitHub App token (or a PAT) as `github-token` instead: the branch is then pushed
+and the pull request opened by the App, which starts `on: push` and
+`on: pull_request` workflows.
+
+```yaml
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.PRUNE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PRUNE_APP_PRIVATE_KEY }}
+
+      - uses: april418/prune-supply-chain-overrides-action@v1
+        with:
+          working-directory: .
+          github-token: ${{ steps.app-token.outputs.token }}
+```
+
+`actions/checkout` persists its token as an HTTP header, which git sends in
+preference to the token in a remote URL. The action clears that header when it
+fetches and pushes the branch, so the checkout step can keep its default
+`persist-credentials`. Versions up to v1.0.11 did not clear it and pushed with
+`GITHUB_TOKEN` whatever `github-token` was; with those, set
+`persist-credentials: false` on the checkout step.
 
 ### Inputs
 

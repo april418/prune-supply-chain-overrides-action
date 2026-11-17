@@ -5,6 +5,7 @@ import type { PrunerReport } from '../src/types.js';
 const BRANCH = 'chore/prune-supply-chain-overrides';
 const TOKEN = 'ghs_secret';
 const BOT = '41898282+github-actions[bot]@users.noreply.github.com';
+const IGNORE_CHECKOUT_AUTH = ['-c', 'http.https://github.com/.extraheader='];
 
 const calls = vi.hoisted(() => [] as string[]);
 const execMock = vi.hoisted(() => vi.fn());
@@ -66,6 +67,7 @@ describe('createPullRequest', () => {
   let openPrs: { number: number; head: string; repo?: string }[];
   let push: { exitCode: number; stderr: string };
   let pushArgs: string[];
+  let fetchArgs: string[];
   // The fixed branch as pushed by an earlier run, or null when it does not exist.
   let remoteBranch: { sha: string; tree: string } | null;
   let branchCommits: { sha: string; author: string; committer: string; subject: string }[];
@@ -120,6 +122,7 @@ describe('createPullRequest', () => {
     openPrs = [];
     push = { exitCode: 0, stderr: '' };
     pushArgs = [];
+    fetchArgs = [];
     remoteBranch = null;
     branchCommits = [];
     prComments = [];
@@ -128,8 +131,10 @@ describe('createPullRequest', () => {
     head = { author: BOT, committer: BOT };
 
     execMock.mockReset().mockResolvedValue(0);
-    getExecOutputMock.mockReset().mockImplementation(async (_cmd: string, args: string[]) => {
+    getExecOutputMock.mockReset().mockImplementation(async (_cmd: string, argv: string[]) => {
+      const args = argv[0] === '-c' ? argv.slice(2) : argv;
       if (args[0] === 'fetch') {
+        fetchArgs = argv;
         return remoteBranch
           ? ok('')
           : { exitCode: 128, stdout: '', stderr: "fatal: couldn't find remote ref" };
@@ -141,7 +146,7 @@ describe('createPullRequest', () => {
         return ok(`base-sha\0${head.author}\0${head.committer}\0`);
       if (args[0] === 'push') {
         calls.push('push');
-        pushArgs = args;
+        pushArgs = argv;
         return { exitCode: push.exitCode, stdout: '', stderr: push.stderr };
       }
       throw new Error(`unexpected git ${args.join(' ')}`);
@@ -313,6 +318,14 @@ describe('createPullRequest', () => {
       `Failed to remove superseded branch ${BRANCH}/202607200707, which blocks pushing ${BRANCH}: Resource not accessible by integration`,
     );
     expect(calls).not.toContain('push');
+  });
+
+  it('fetches and pushes with github-token alone, ignoring the credentials actions/checkout persisted', async () => {
+    await run();
+
+    expect(fetchArgs.slice(0, 3)).toEqual([...IGNORE_CHECKOUT_AUTH, 'fetch']);
+    expect(pushArgs.slice(0, 3)).toEqual([...IGNORE_CHECKOUT_AUTH, 'push']);
+    expect(pushArgs).toContain(`https://x-access-token:${TOKEN}@github.com/${REPO}.git`);
   });
 
   it("surfaces git's stderr with the token redacted when the push fails", async () => {

@@ -40,6 +40,12 @@ interface RemoteBranch {
   tree: string;
 }
 
+// actions/checkout persists its token as an Authorization header for this host,
+// and git sends it in preference to the token in the remote URL. A push would
+// then run as GITHUB_TOKEN, which does not trigger workflows on the pull
+// request. An empty value resets the header list.
+const IGNORE_CHECKOUT_AUTH = ['-c', 'http.https://github.com/.extraheader='];
+
 async function fetchRemoteBranch(
   cwd: string,
   remoteUrl: string,
@@ -47,7 +53,7 @@ async function fetchRemoteBranch(
 ): Promise<RemoteBranch | null> {
   const fetched = await getExecOutput(
     'git',
-    ['fetch', '--no-tags', remoteUrl, `refs/heads/${branch}`],
+    [...IGNORE_CHECKOUT_AUTH, 'fetch', '--no-tags', remoteUrl, `refs/heads/${branch}`],
     {
       cwd,
       silent: true,
@@ -119,6 +125,7 @@ export async function createPullRequest(opts: PullRequestOptions): Promise<PullR
     const pushed = await getExecOutput(
       'git',
       [
+        ...IGNORE_CHECKOUT_AUTH,
         'push',
         `--force-with-lease=refs/heads/${branch}:${remote?.sha ?? ''}`,
         remoteUrl,
