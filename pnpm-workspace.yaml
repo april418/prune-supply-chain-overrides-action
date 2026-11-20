@@ -55,11 +55,6 @@ trustPolicyIgnoreAfter: 10080
 
 # pnpm audit は high 以上の脆弱性があるときだけ失敗させる。
 auditLevel: high
-auditConfig:
-  ignoreGhsas:
-    # picomatch <= 4.0.7 の extglob の ReDoS (high)。修正版がまだ無い。
-    # typescript-eslint などの開発用の依存だけが引き、dist には入らない。
-    - GHSA-fc5q-39xc-vjpf
 
 # pnpm add で依存を ^ なしの完全一致で書く。
 savePrefix: ''
